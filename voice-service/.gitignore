@@ -1,0 +1,51 @@
+# Voice Processing Microservice
+
+# Dependencies
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+eggs/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Environment files (contain secrets)
+.env
+
+# Storage (ephemeral audio files)
+storage/audio/*
+storage/generated/*
+!storage/audio/.gitkeep
+!storage/generated/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+htmlcov/
+.coverage
+.coverage.*
+.pytest_cache/
+
+# Docker
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Whisper model cache (downloaded at runtime)
+models/
+
+# Ruff
+.ruff_cache/

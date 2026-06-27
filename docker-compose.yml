@@ -1,0 +1,226 @@
+# ===================================================================
+# WhatsApp AI Doctor — Full Stack Docker Compose
+# ===================================================================
+# Brings up the entire backend from zero:
+#   - PostgreSQL (relational DB)
+#   - Redis (Celery broker + cache)
+#   - Qdrant (vector DB for RAG)
+#   - Ollama (local LLM inference)
+#   - Voice Service (STT + TTS)
+#   - Voice Celery Worker
+#   - Core API (webhook + agents)
+#   - Core Celery Worker
+#
+# Usage:
+#   docker-compose up -d
+#   docker-compose exec ollama ollama pull llama3.1:8b
+# ===================================================================
+
+services:
+
+  # ── PostgreSQL ────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: whatsapp-doctor-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: whatsapp_doctor
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Redis ─────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: whatsapp-doctor-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Qdrant (Vector DB) ───────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: whatsapp-doctor-qdrant
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Ollama (Local LLM) ───────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: whatsapp-doctor-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # GPU passthrough (uncomment for NVIDIA GPU)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    restart: unless-stopped
+
+  # ── Voice Service (STT + TTS) ────────────────────────────────────
+  voice-service:
+    build:
+      context: ./voice-service
+      dockerfile: docker/Dockerfile
+    container_name: whatsapp-doctor-voice
+    ports:
+      - "8000:8000"
+    environment:
+      VOICE_WHISPER_MODEL_SIZE: tiny
+      VOICE_WHISPER_DEVICE: cpu
+      VOICE_WHISPER_COMPUTE_TYPE: int8
+      VOICE_LIBRETRANSLATE_URL: http://libretranslate:5000
+      VOICE_TRANSLATION_ENABLED: "false"
+      VOICE_TTS_PROVIDER: edge
+      VOICE_OPENAI_API_KEY: ${VOICE_OPENAI_API_KEY:-dummy}
+      VOICE_CELERY_BROKER_URL: redis://redis:6379/0
+      VOICE_CELERY_RESULT_BACKEND: redis://redis:6379/0
+      VOICE_BASE_URL: http://voice-service:8000
+      VOICE_LOG_LEVEL: info
+      VOICE_ENVIRONMENT: production
+    volumes:
+      - voice_storage:/app/storage
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+  # ── Voice Celery Worker ──────────────────────────────────────────
+  celery-worker-voice:
+    build:
+      context: ./voice-service
+      dockerfile: docker/Dockerfile
+    container_name: whatsapp-doctor-celery-voice
+    command: celery -A tasks.celery_worker worker --loglevel=info --concurrency=2
+    environment:
+      VOICE_WHISPER_MODEL_SIZE: tiny
+      VOICE_WHISPER_DEVICE: cpu
+      VOICE_WHISPER_COMPUTE_TYPE: int8
+      VOICE_TTS_PROVIDER: edge
+      VOICE_OPENAI_API_KEY: ${VOICE_OPENAI_API_KEY:-dummy}
+      VOICE_CELERY_BROKER_URL: redis://redis:6379/0
+      VOICE_CELERY_RESULT_BACKEND: redis://redis:6379/0
+      VOICE_BASE_URL: http://voice-service:8000
+      VOICE_LOG_LEVEL: info
+    volumes:
+      - voice_storage:/app/storage
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Core API (Webhook + Agents) ──────────────────────────────────
+  core-api:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: whatsapp-doctor-core
+    ports:
+      - "8080:8080"
+    environment:
+      APP_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/whatsapp_doctor
+      APP_REDIS_URL: redis://redis:6379/1
+      APP_CELERY_BROKER_URL: redis://redis:6379/1
+      APP_CELERY_RESULT_BACKEND: redis://redis:6379/1
+      APP_OLLAMA_BASE_URL: http://ollama:11434
+      APP_OLLAMA_MODEL: ${APP_OLLAMA_MODEL:-llama3.1:8b}
+      APP_QDRANT_HOST: qdrant
+      APP_QDRANT_PORT: 6333
+      APP_VOICE_SERVICE_URL: http://voice-service:8000
+      APP_WHATSAPP_VERIFY_TOKEN: ${APP_WHATSAPP_VERIFY_TOKEN:-whatsapp-ai-doctor-verify}
+      APP_WHATSAPP_ACCESS_TOKEN: ${APP_WHATSAPP_ACCESS_TOKEN:-}
+      APP_WHATSAPP_PHONE_NUMBER_ID: ${APP_WHATSAPP_PHONE_NUMBER_ID:-}
+      APP_LOG_LEVEL: info
+      APP_ENVIRONMENT: production
+    volumes:
+      - core_storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped
+
+  # ── Core Celery Worker ───────────────────────────────────────────
+  celery-worker-core:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: whatsapp-doctor-celery-core
+    command: celery -A tasks.celery_app worker --loglevel=info --concurrency=2
+    environment:
+      APP_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/whatsapp_doctor
+      APP_REDIS_URL: redis://redis:6379/1
+      APP_CELERY_BROKER_URL: redis://redis:6379/1
+      APP_CELERY_RESULT_BACKEND: redis://redis:6379/1
+      APP_OLLAMA_BASE_URL: http://ollama:11434
+      APP_OLLAMA_MODEL: ${APP_OLLAMA_MODEL:-llama3.1:8b}
+      APP_QDRANT_HOST: qdrant
+      APP_QDRANT_PORT: 6333
+      APP_VOICE_SERVICE_URL: http://voice-service:8000
+      APP_WHATSAPP_ACCESS_TOKEN: ${APP_WHATSAPP_ACCESS_TOKEN:-}
+      APP_WHATSAPP_PHONE_NUMBER_ID: ${APP_WHATSAPP_PHONE_NUMBER_ID:-}
+      APP_LOG_LEVEL: info
+    volumes:
+      - core_storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:
+  ollama_data:
+  voice_storage:
+  core_storage:

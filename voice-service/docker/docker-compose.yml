@@ -1,0 +1,126 @@
+# ===================================================================
+# Docker Compose — Voice Processing Microservice
+# ===================================================================
+# Single command startup:  docker compose up
+# Stop:                    docker compose down
+# Logs:                    docker compose logs -f
+# ===================================================================
+
+services:
+  # ── Voice API Server ────────────────────────────────────────────
+  voice-api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: voice-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../.env
+    environment:
+      - VOICE_CELERY_BROKER_URL=redis://redis:6379/0
+      - VOICE_CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - VOICE_LIBRETRANSLATE_URL=http://libretranslate:5000
+    volumes:
+      - ..:/app                         # Hot reload for development
+      - whisper-models:/home/voiceservice/.cache  # Cache Whisper models
+      - audio-storage:/app/storage      # Persist audio files
+    depends_on:
+      redis:
+        condition: service_healthy
+      libretranslate:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - voice-network
+    restart: unless-stopped
+
+  # ── Celery Worker ───────────────────────────────────────────────
+  celery-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: voice-celery-worker
+    command: >
+      celery -A tasks.celery_worker worker
+      --loglevel=info
+      --concurrency=4
+      --max-tasks-per-child=50
+    env_file:
+      - ../.env
+    environment:
+      - VOICE_CELERY_BROKER_URL=redis://redis:6379/0
+      - VOICE_CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - VOICE_LIBRETRANSLATE_URL=http://libretranslate:5000
+    volumes:
+      - ..:/app
+      - whisper-models:/home/voiceservice/.cache
+      - audio-storage:/app/storage
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - voice-network
+    restart: unless-stopped
+
+  # ── Redis (Celery Broker + Result Backend) ──────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: voice-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis-data:/data
+    networks:
+      - voice-network
+    restart: unless-stopped
+
+  # ── LibreTranslate (Self-hosted Translation) ────────────────────
+  libretranslate:
+    image: libretranslate/libretranslate:latest
+    container_name: voice-libretranslate
+    ports:
+      - "5000:5000"
+    environment:
+      - LT_LOAD_ONLY=en,hi,bn
+      - LT_UPDATE_MODELS=true
+      - LT_SUGGESTIONS=false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/languages"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s   # Model download takes 2-3 minutes on first run
+    volumes:
+      - lt-models:/home/libretranslate/.local
+    networks:
+      - voice-network
+    restart: unless-stopped
+
+# ── Named Volumes ─────────────────────────────────────────────────
+volumes:
+  whisper-models:
+    name: voice-whisper-models
+  audio-storage:
+    name: voice-audio-storage
+  redis-data:
+    name: voice-redis-data
+  lt-models:
+    name: voice-lt-models
+
+# ── Network ──────────────────────────────────────────────────────
+networks:
+  voice-network:
+    name: voice-network
+    driver: bridge
