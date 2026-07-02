@@ -88,7 +88,42 @@ whatsapp.init({ stores, database, io, ROOT_DIR, MEDIA_DIR });
 registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR });
 
 const PORT = process.env.PORT || 3001;
-httpServer.listen(PORT, () => {
-  console.log(`[Bridge] Server running on http://localhost:${PORT}`);
-  whatsapp.connectToWhatsApp();
+
+process.on('uncaughtException', (err) => {
+  console.error('\n❌ FATAL ERROR:', err.message);
+  console.error(err.stack);
+  console.error('\nPress Ctrl+C to exit...');
 });
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('\n❌ UNHANDLED REJECTION:', reason);
+});
+
+try {
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log('\n========================================');
+    console.log('   WhatsApp Relay Bridge - Running');
+    console.log('========================================\n');
+    console.log('Server started successfully!');
+    console.log(`\nAccess URL: http://localhost:${PORT}`);
+    console.log(`Network URL: http://<YOUR_PC_IP>:${PORT}`);
+    console.log(`\nWaiting for WhatsApp authentication...`);
+    console.log('========================================\n');
+    whatsapp.connectToWhatsApp();
+  });
+
+  httpServer.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`\n❌ ERROR: Port ${PORT} is already in use!`);
+      console.error('   • Close other applications using this port');
+      console.error('   • Or set PORT environment variable to a different port');
+    } else {
+      console.error(`\n❌ Server error: ${err.message}`);
+    }
+    process.exit(1);
+  });
+} catch (err) {
+  console.error('\n❌ Failed to start server:', err.message);
+  console.error(err.stack);
+  console.error('\nPress Ctrl+C to exit...');
+}
