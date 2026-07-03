@@ -733,8 +733,8 @@
     }
 
     .message-row.outgoing .msg-bubble {
-      background: linear-gradient(135deg, #00b37a, #00e5a0);
-      color: #000;
+      background: #005c4b; /* Premium WhatsApp dark mode green */
+      color: #e9edef; /* Crisp off-white text for readability */
       border-top-right-radius: 4px;
     }
 
@@ -748,7 +748,7 @@
     }
 
     .message-row.outgoing .msg-sender {
-      color: #005c3e;
+      color: #00a884; /* Soft teal green sender name */
     }
 
     .msg-time {
@@ -757,6 +757,11 @@
       margin-top: 4px;
       opacity: 0.5;
       text-align: right;
+    }
+
+    .message-row.outgoing .msg-time {
+      color: rgba(233, 237, 239, 0.65); /* Opaque off-white time for outgoing bubbles */
+      opacity: 0.9;
     }
 
     .msg-edited {
@@ -2094,5 +2099,55 @@
         margin-top: 6px !important;
         pointer-events: auto !important;
         transform: translateY(0) !important;
+      }
+    }
+
+    /* Message status ticks styling */
+    .msg-status-ticks {
+      margin-left: 5px;
+      font-size: 10px;
+      vertical-align: middle;
+      display: inline-block;
+      line-height: 1;
+      font-weight: normal;
+    }
+    
+    .message-row.outgoing .msg-status-ticks {
+      font-weight: 500;
+      opacity: 1 !important; /* Force full opacity to avoid inheritance from msg-time */
+    }
+    
+    .message-row.outgoing .msg-status-ticks.status-pending {
+      color: rgba(233, 237, 239, 0.45);
+    }
+    
+    .message-row.outgoing .msg-status-ticks.status-sent {
+      color: rgba(233, 237, 239, 0.6);
+    }
+    
+    .message-row.outgoing .msg-status-ticks.status-delivered {
+      color: rgba(233, 237, 239, 0.65);
+    }
+    
+    .message-row.outgoing .msg-status-ticks.status-read {
+      color: #53bdeb; /* Bright sky blue read receipt (high contrast on dark green) */
+      font-weight: 700;
+    }
+    
+    .message-row.outgoing .msg-status-ticks.status-failed {
+      color: #f87171; /* High contrast red for dark mode green bubble */
+      font-weight: bold;
+      animation: pulseAlert 1.2s infinite alternate;
+      cursor: help;
+    }
+    
+    @keyframes pulseAlert {
+      from {
+        transform: scale(1);
+        text-shadow: 0 0 2px rgba(248, 113, 113, 0.2);
+      }
+      to {
+        transform: scale(1.15);
+        text-shadow: 0 0 8px rgba(248, 113, 113, 0.7);
       }
     }

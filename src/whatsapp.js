@@ -198,6 +198,68 @@ function handleMessageEditInStore(jid, messageId, newContent, options = {}) {
   return found;
 }
 
+function handleMessageStatusUpdateInStore(jid, messageId, status, fromMe) {
+  if (!jid || !messageId) return false;
+  const targetJids = getThreadJids(jid);
+  let found = false;
+
+  for (const threadJid of targetJids) {
+    const thread = stores.messageStore[threadJid];
+    if (!thread) continue;
+    const msg = thread.find((item) => item.id === messageId);
+    if (!msg) continue;
+
+    if (msg.status !== status) {
+      msg.status = status;
+      database.upsertMessage(msg);
+      found = true;
+    }
+  }
+
+  if (found) {
+    for (const threadJid of targetJids) {
+      io.emit('message_status_update', { jid: threadJid, messageId, status, fromMe });
+    }
+    stores.saveStore();
+  }
+
+  return found;
+}
+
+function isChatActive(jid) {
+  if (!io) return false;
+  const sockets = io.sockets.sockets;
+  const targetJids = getThreadJids(jid);
+  for (const s of sockets.values()) {
+    if (s.activeJid && targetJids.includes(s.activeJid)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function markChatAsRead(jid) {
+  if (!sock || connectionStatus !== 'connected') return;
+  try {
+    const threadMsgs = stores.getMessagesForJid(jid);
+    if (!threadMsgs || threadMsgs.length === 0) return;
+
+    // Find the last incoming message (not from me)
+    const lastIncoming = [...threadMsgs].reverse().find(m => !m.fromMe);
+    if (lastIncoming) {
+      const key = {
+        remoteJid: lastIncoming.jid || jid,
+        id: lastIncoming.id,
+        fromMe: false,
+        participant: lastIncoming.participant || undefined,
+      };
+      await sock.readMessages([key]);
+    }
+  } catch (err) {
+    console.warn(`[Bridge] Failed to mark chat ${jid} as read:`, err.message);
+  }
+}
+
 function handleProtocolMessage(rawMsg, unwrappedMsg, options = {}) {
   const protocol = unwrappedMsg?.protocolMessage;
   if (!protocol) return false;
@@ -458,6 +520,10 @@ async function connectToWhatsApp() {
         if (thread.some((existing) => existing.id === parsed.id)) continue;
         stores.addMessageToStore(parsed);
         io.emit('message', parsed);
+
+        if (!parsed.fromMe && isChatActive(parsed.jid)) {
+          markChatAsRead(parsed.jid);
+        }
         if (!chatStore[parsed.jid]) {
           const resolved = stores.resolveContactName(parsed.jid);
           chatStore[parsed.jid] = stores.normalizeChat({
@@ -490,12 +556,20 @@ async function connectToWhatsApp() {
     sock.ev.on('messages.update', (updates = []) => {
       for (const item of updates) {
         const key = item?.key;
-        const update = item?.update || {};
-        const rawMessage = update.message || item?.message;
-        if (!key?.remoteJid || !rawMessage) continue;
+        if (!key || !key.remoteJid || !key.id) continue;
 
-        const unwrapped = stores.unwrapMessage(rawMessage);
-        handleProtocolMessage({ key, message: rawMessage }, unwrapped);
+        const update = item?.update || {};
+
+        // If it's a message status/ack update
+        if (update.status !== undefined) {
+          handleMessageStatusUpdateInStore(key.remoteJid, key.id, update.status, key.fromMe);
+        }
+
+        const rawMessage = update.message || item?.message;
+        if (rawMessage) {
+          const unwrapped = stores.unwrapMessage(rawMessage);
+          handleProtocolMessage({ key, message: rawMessage }, unwrapped);
+        }
       }
     });
 
@@ -735,6 +809,7 @@ async function connectToWhatsApp() {
             editedAt: null,
             deleted: Boolean(rawMsg.message?.protocolMessage?.type === 0),
             clientTempId: null,
+            status: rawMsg.status !== undefined ? rawMsg.status : null,
           };
           if (!msgRecord.id || !msgRecord.jid) continue;
           // addMessageToStore deduplicates, sorts, trims, and persists to DB.
@@ -964,6 +1039,7 @@ async function parseMessage(raw, skipMedia = false) {
     quotedContent,
     quotedSender,
     quotedMediaType,
+    status: raw.status !== undefined ? raw.status : null,
   };
 }
 
@@ -1008,4 +1084,5 @@ module.exports = {
   disconnectWhatsApp,
   loadGroups,
   requestOlderHistory,
+  markChatAsRead,
 };

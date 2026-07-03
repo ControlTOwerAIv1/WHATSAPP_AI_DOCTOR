@@ -148,6 +148,12 @@ async function resolveLidToPhoneAsync(lid) {
       contactStore[pn] = existingPn;
       database.upsertContact(existingPn);
 
+      // Merge LID chat and messages into PN chat
+      mergeLidChatToPhone(lid, pn);
+
+      if (io) io.emit('chat_merged', { lid, jid: pn });
+      broadcastChats();
+
       return pn;
     } else {
       console.log(`[Bridge] Baileys getPNForLID returned null/undefined for LID ${lid}`);
@@ -159,6 +165,74 @@ async function resolveLidToPhoneAsync(lid) {
   }
 
   return null;
+}
+
+function mergeLidChatToPhone(lid, pn) {
+  if (!lid || !pn) return;
+  console.log(`[Bridge] Merging LID chat ${lid} into phone chat ${pn}`);
+
+  // 1. Merge chats in memory & database
+  if (chatStore[lid]) {
+    const lidChat = chatStore[lid];
+    if (chatStore[pn]) {
+      // Merge unread count and keep the more recent timestamp
+      chatStore[pn].unreadCount += lidChat.unreadCount;
+      if (lidChat.timestamp > chatStore[pn].timestamp) {
+        chatStore[pn].timestamp = lidChat.timestamp;
+        chatStore[pn].lastMsg = lidChat.lastMsg;
+      }
+      database.upsertChat(chatStore[pn]);
+    } else {
+      // Rename chat
+      lidChat.id = pn;
+      lidChat.phone = pn.split('@')[0].split(':')[0];
+      chatStore[pn] = lidChat;
+      database.upsertChat(lidChat);
+    }
+    delete chatStore[lid];
+    try {
+      database.db.prepare('DELETE FROM chats WHERE id = ?').run(lid);
+    } catch (err) {
+      console.warn('[Bridge] Error deleting chat from database:', err.message);
+    }
+  }
+
+  // 2. Merge messages in memory
+  if (messageStore[lid]) {
+    if (!messageStore[pn]) messageStore[pn] = [];
+    const combined = [...messageStore[pn], ...messageStore[lid]];
+    const unique = [];
+    const seen = new Set();
+    for (const msg of combined) {
+      if (!seen.has(msg.id)) {
+        seen.add(msg.id);
+        msg.jid = pn;
+        if (msg.from === lid) msg.from = pn;
+        unique.push(msg);
+      }
+    }
+    messageStore[pn] = unique.sort((a, b) => toTimestamp(a.timestamp) - toTimestamp(b.timestamp));
+    delete messageStore[lid];
+  }
+
+  // 3. Update database messages
+  try {
+    const rows = database.db.prepare('SELECT id, payload FROM messages WHERE jid = ?').all(lid);
+    if (rows.length > 0) {
+      const updateStmt = database.db.prepare('UPDATE messages SET jid = ?, payload = ? WHERE id = ?');
+      const tx = database.db.transaction((items) => {
+        for (const r of items) {
+          const parsedPayload = JSON.parse(r.payload);
+          parsedPayload.jid = pn;
+          if (parsedPayload.from === lid) parsedPayload.from = pn;
+          updateStmt.run(pn, JSON.stringify(parsedPayload), r.id);
+        }
+      });
+      tx(rows);
+    }
+  } catch (err) {
+    console.warn('[Bridge] Error migrating database messages:', err.message);
+  }
 }
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -288,6 +362,7 @@ function normalizeMessageRecord(msg = {}) {
     quotedContent: msg.quotedContent || null,
     quotedSender: msg.quotedSender || null,
     quotedMediaType: msg.quotedMediaType || null,
+    status: msg.status !== undefined ? msg.status : null,
   };
 }
 
@@ -394,6 +469,15 @@ function loadStore() {
     connectorOperatorId = database.getMetadata('connector_operator_id');
     connectorOperatorName = database.getMetadata('connector_operator_name');
     migrateChatTypes();
+
+    // Merge any existing LID chats/messages that already have resolved PNs
+    for (const lid of Object.keys(lidToJid)) {
+      const pn = lidToJid[lid];
+      if (pn && (chatStore[lid] || messageStore[lid])) {
+        mergeLidChatToPhone(lid, pn);
+      }
+    }
+
     console.log(
       `[Bridge] Loaded SQLite store: ${Object.keys(chatStore).length} chats, ${Object.keys(contactStore).length} contacts, ${Object.keys(messageStore).length} message threads, ${Object.keys(lidToJid).length} lid mappings`
     );
@@ -893,6 +977,7 @@ async function recordOutboundMessage({ jid, operator, result, message }) {
     quotedContent: message.quotedContent || null,
     quotedSender: message.quotedSender || null,
     quotedMediaType: message.quotedMediaType || null,
+    status: result?.status !== undefined ? result.status : 1,
   });
   updateChatPreview(jid, sentMsg.content, timestamp);
   saveStore();

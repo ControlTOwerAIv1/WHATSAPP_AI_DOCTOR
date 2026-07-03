@@ -192,6 +192,19 @@
       return val;
     }
 
+    function isActiveChatJid(jid) {
+      if (!activeChat || !jid) return false;
+      if (activeChat.id === jid) return true;
+      const cleanA = cleanJid(activeChat.id).replace(/\D/g, '');
+      const cleanB = cleanJid(jid).replace(/\D/g, '');
+      if (cleanA && cleanA === cleanB) return true;
+      if (activeChat.phone) {
+        const cleanPhone = String(activeChat.phone).replace(/\D/g, '');
+        if (cleanPhone && cleanPhone === cleanB) return true;
+      }
+      return false;
+    }
+
     function renderChatHeader() {
       const assignmentPill = document.getElementById('assignmentPill');
       const claimBtn = document.getElementById('claimChatBtn');
@@ -803,6 +816,7 @@
       row.dataset.mediaType = msg.mediaType || 'text';
       row.dataset.deleted = msg.deleted ? '1' : '0';
       row.dataset.content = msg.content || '';
+      row.dataset.status = msg.status !== undefined ? msg.status : '';
       if (msg.quotedMessageId) row.dataset.quotedMessageId = msg.quotedMessageId;
       let resolvedSender = cleanJid(msg.sender);
       const senderName = outgoing
@@ -831,12 +845,48 @@
       const allowEdit = canEditMessage(msg);
       const allowDelete = canDeleteForEveryone(msg);
 
+      // Render status ticks for outgoing messages
+      let statusHtml = '';
+      if (outgoing && !msg.deleted) {
+        let tickIcon = '';
+        let tickClass = 'status-sent';
+        let tooltip = 'Sent';
+
+        if (msg.status === 0 || msg.status === 'failed') {
+          tickIcon = `<svg class="tick-svg status-failed-svg" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle;"><circle cx="8" cy="8" r="7"/><line x1="8" y1="5" x2="8" y2="9"/><line x1="8" y1="12" x2="8.01" y2="12" stroke-width="2.5"/></svg>`;
+          tickClass = 'status-failed';
+          tooltip = 'Failed to send';
+        } else if ((msg.status === 1 || msg.status === 'pending') && (Math.floor(Date.now() / 1000) - msg.timestamp < 60)) {
+          tickIcon = '🕒';
+          tickClass = 'status-pending';
+          tooltip = 'Pending...';
+        } else if (msg.status === 2 || msg.status === 'sent') {
+          tickIcon = `<svg class="tick-svg" viewBox="0 0 16 11" width="12" height="9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle;"><path d="M1 5.5L5 9.5L15 1.5"/></svg>`;
+          tickClass = 'status-sent';
+          tooltip = 'Sent';
+        } else if (msg.status === 3 || msg.status === 'delivered') {
+          tickIcon = `<svg class="tick-svg" viewBox="0 0 19 11" width="15" height="9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle;"><path d="M1 5.5L5 9.5L10 4.5 M8 5.5L11.5 9L18 1.5"/></svg>`;
+          tickClass = 'status-delivered';
+          tooltip = 'Delivered';
+        } else if (msg.status === 4 || msg.status === 'read' || msg.status === 5 || msg.status === 'played') {
+          tickIcon = '✓✓';
+          tickClass = 'status-read';
+          tooltip = 'Read';
+        } else {
+          // Default fallback for sent messages if status is not set, or is stale pending
+          tickIcon = '✓';
+          tickClass = 'status-sent';
+          tooltip = 'Sent';
+        }
+        statusHtml = `<span class="msg-status-ticks ${tickClass}" id="status-tick-${msg.id}" title="${tooltip}">${tickIcon}</span>`;
+      }
+
       row.innerHTML = `
     <div class="msg-avatar">${initial}</div>
     <div class="msg-bubble">
       ${showSender ? `<div class="msg-sender">${senderName}</div>` : ''}
       ${contentHtml}
-      ${msg.deleted ? '' : `<div class="msg-time">${timeStr}${editedMark}</div>`}
+      ${msg.deleted ? '' : `<div class="msg-time">${timeStr}${editedMark}${statusHtml}</div>`}
       ${!msg.deleted && (allowReply || allowEdit || allowDelete) ? `
         <div class="msg-actions">
           ${allowReply ? `<button class="btn-ghost-sm" onclick="startReply('${msg.id}')">↩ Reply</button>` : ''}
@@ -872,6 +922,64 @@
         if (existing) existing.remove();
         timeDiv.insertAdjacentHTML('beforeend', '<span class="msg-edited"> (edited)</span>');
       }
+    }
+
+    function updateMessageStatusInUI(messageId, status) {
+      const row = document.getElementById('msg-' + messageId);
+      if (!row) return;
+
+      row.dataset.status = status;
+
+      const tickEl = document.getElementById('status-tick-' + messageId);
+      if (!tickEl) {
+        const timeDiv = row.querySelector('.msg-time');
+        if (timeDiv && row.dataset.fromMe === '1') {
+          const span = document.createElement('span');
+          span.id = 'status-tick-' + messageId;
+          timeDiv.appendChild(span);
+          updateTickElement(span, status, row.dataset.timestamp);
+        }
+      } else {
+        updateTickElement(tickEl, status, row.dataset.timestamp);
+      }
+    }
+
+    function updateTickElement(el, status, timestamp) {
+      let tickIcon = '';
+      let tickClass = 'status-pending';
+      let tooltip = 'Sending...';
+
+      const ageSeconds = timestamp ? (Math.floor(Date.now() / 1000) - Number(timestamp)) : 0;
+
+      if (status === 0 || status === 'failed') {
+        tickIcon = `<svg class="tick-svg status-failed-svg" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle;"><circle cx="8" cy="8" r="7"/><line x1="8" y1="5" x2="8" y2="9"/><line x1="8" y1="12" x2="8.01" y2="12" stroke-width="2.5"/></svg>`;
+        tickClass = 'status-failed';
+        tooltip = 'Failed to send';
+      } else if ((status === 1 || status === 'pending') && ageSeconds < 60) {
+        tickIcon = '🕒';
+        tickClass = 'status-pending';
+        tooltip = 'Pending...';
+      } else if (status === 2 || status === 'sent') {
+        tickIcon = `<svg class="tick-svg" viewBox="0 0 16 11" width="12" height="9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle;"><path d="M1 5.5L5 9.5L15 1.5"/></svg>`;
+        tickClass = 'status-sent';
+        tooltip = 'Sent';
+      } else if (status === 3 || status === 'delivered') {
+        tickIcon = `<svg class="tick-svg" viewBox="0 0 19 11" width="15" height="9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle;"><path d="M1 5.5L5 9.5L10 4.5 M8 5.5L11.5 9L18 1.5"/></svg>`;
+        tickClass = 'status-delivered';
+        tooltip = 'Delivered';
+      } else if (status === 4 || status === 'read' || status === 5 || status === 'played') {
+        tickIcon = `<svg class="tick-svg" viewBox="0 0 19 11" width="15" height="9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle;"><path d="M1 5.5L5 9.5L10 4.5 M8 5.5L11.5 9L18 1.5"/></svg>`;
+        tickClass = 'status-read';
+        tooltip = 'Read';
+      } else {
+        tickIcon = `<svg class="tick-svg" viewBox="0 0 16 11" width="12" height="9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle;"><path d="M1 5.5L5 9.5L15 1.5"/></svg>`;
+        tickClass = 'status-sent';
+        tooltip = 'Sent';
+      }
+
+      el.className = `msg-status-ticks ${tickClass}`;
+      el.innerHTML = tickIcon;
+      el.title = tooltip;
     }
 
     function markMessageDeleted(messageId) {
@@ -946,6 +1054,7 @@
         quotedContent: m.quotedContent || null,
         quotedSender: m.quotedSender || null,
         quotedMediaType: m.quotedMediaType || null,
+        status: m.status !== undefined ? m.status : null,
       };
     }
 
@@ -1128,6 +1237,7 @@
         quotedContent: replyingToMessage?.content || null,
         quotedSender: replyingToMessage?.sender || null,
         quotedMediaType: replyingToMessage?.mediaType || null,
+        status: 1,
       });
       sentTempIds.add(tempId);
 
@@ -1181,6 +1291,7 @@
         mediaType: type,
         mediaUrl: pendingMedia.previewUrl || null,
         fileName: file.name,
+        status: 1,
       };
       appendMessage(previewMsg);
       sentTempIds.add(tempId);
@@ -1198,10 +1309,15 @@
         try {
           const res = await fetch(`${bridgeUrl}/api/send/${type}`, { method: 'POST', headers: operatorHeaders(), body: formData });
           const data = await res.json();
-          if (data.success) showToast(`${type.charAt(0).toUpperCase() + type.slice(1)} sent!`);
-          else showToast(data.error, 'error');
+          if (data.success) {
+            showToast(`${type.charAt(0).toUpperCase() + type.slice(1)} sent!`);
+          } else {
+            showToast(data.error, 'error');
+            updateMessageStatusInUI(tempId, 0);
+          }
         } catch (e) {
           showToast('Send failed: ' + e.message, 'error');
+          updateMessageStatusInUI(tempId, 0);
         }
       } else {
         showToast(`${type} ready to send (connect bridge first)`);
@@ -1277,11 +1393,23 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...operatorHeaders() },
           body: JSON.stringify({ jid: activeChat.id, latitude: lat, longitude: lng, name, clientTempId: tempId, operatorId, operatorName }),
-        }).then(() => showToast('Location sent!')).catch(e => showToast(e.message, 'error'));
+        }).then(async (res) => {
+          const data = await res.json().catch(() => ({}));
+          if (res.ok && data.success) {
+            showToast('Location sent!');
+          } else {
+            showToast(data.error || 'Failed to send location', 'error');
+            updateMessageStatusInUI(tempId, 0);
+          }
+        }).catch(e => {
+          showToast(e.message, 'error');
+          updateMessageStatusInUI(tempId, 0);
+        });
         appendMessage({
           id: tempId, sender: operatorName, operatorName, content: name || 'Shared location',
           time: formatTime(new Date()), outgoing: true, fromMe: true,
           mediaType: 'location', mediaUrl: `https://maps.google.com/?q=${lat},${lng}`,
+          status: 1,
         });
         sentTempIds.add(tempId);
       }
@@ -1701,7 +1829,7 @@
           }
         }
 
-        if (activeChat && (msg.from === activeChat.id || msg.jid === activeChat.id)) {
+        if (isActiveChatJid(msg.from) || isActiveChatJid(msg.jid)) {
           appendMessage(normalizeMessage(msg));
         }
 
@@ -1727,21 +1855,45 @@
           const tempRow = document.getElementById('msg-' + clientTempId);
           if (tempRow) {
             tempRow.id = 'msg-' + serverId;
+            tempRow.dataset.id = serverId;
+            const tickEl = document.getElementById('status-tick-' + clientTempId);
+            if (tickEl) {
+              tickEl.id = 'status-tick-' + serverId;
+            }
             const timeEl = tempRow.querySelector('.msg-time');
-            if (timeEl) timeEl.textContent = formatTime(new Date(timestamp * 1000));
+            if (timeEl) {
+              const timeStr = formatTime(new Date(timestamp * 1000));
+              const editedMark = tempRow.querySelector('.msg-edited') ? '<div class="msg-edited">(edited)</div>' : '';
+              const tickHtml = `<span class="msg-status-ticks status-sent" id="status-tick-${serverId}" title="Sent"><svg class="tick-svg" viewBox="0 0 16 11" width="12" height="9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle;"><path d="M1 5.5L5 9.5L15 1.5"/></svg></span>`;
+              timeEl.innerHTML = `${timeStr}${editedMark}${tickHtml}`;
+            }
           }
           sentTempIds.delete(clientTempId);
         }
       });
 
+      socket.on('message_status_update', ({ jid, messageId, status, fromMe }) => {
+        if (isActiveChatJid(jid)) {
+          updateMessageStatusInUI(messageId, status);
+        }
+      });
+
+      socket.on('message_failed', ({ clientTempId, jid, error }) => {
+        if (clientTempId) {
+          updateMessageStatusInUI(clientTempId, 0);
+          showToast(`Message failed to send: ${error}`, 'error');
+          sentTempIds.delete(clientTempId);
+        }
+      });
+
       socket.on('message_edited', ({ jid, messageId, newContent, editedAt }) => {
-        if (activeChat && activeChat.id === jid) {
+        if (isActiveChatJid(jid)) {
           updateMessageInPlace(messageId, newContent, editedAt);
         }
       });
 
       socket.on('message_deleted', ({ jid, messageId }) => {
-        if (activeChat && activeChat.id === jid) {
+        if (isActiveChatJid(jid)) {
           markMessageDeleted(messageId);
         }
       });
@@ -1766,6 +1918,22 @@
         upsertChatRecord(chat);
         syncActiveChat();
         renderChatHeader();
+        renderChatList(allChats);
+      });
+
+      socket.on('chat_merged', ({ lid, jid }) => {
+        if (activeChat && activeChat.id === lid) {
+          activeChat.id = jid;
+          activeChat.phone = jid.split('@')[0].split(':')[0];
+          renderChatHeader();
+        }
+        allChats.forEach(c => {
+          if (c.id === lid) {
+            c.id = jid;
+            c.phone = jid.split('@')[0].split(':')[0];
+          }
+        });
+        syncActiveChat();
         renderChatList(allChats);
       });
 

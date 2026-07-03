@@ -433,6 +433,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   app.post('/api/send', async (req, res) => {
     const sock = whatsapp.getSock();
     if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
+    if (req.body.jid) req.body.jid = stores.getPreferredJid(req.body.jid);
     const operator = getOperatorFromRequest(req);
     const lock = stores.ensureChatLockForOperator(req.body.jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
@@ -465,6 +466,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   app.post('/api/send/image', upload.single('file'), async (req, res) => {
     const sock = whatsapp.getSock();
     if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
+    if (req.body.jid) req.body.jid = stores.getPreferredJid(req.body.jid);
     const operator = getOperatorFromRequest(req);
     const lock = stores.ensureChatLockForOperator(req.body.jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
@@ -496,6 +498,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   app.post('/api/send/video', upload.single('file'), async (req, res) => {
     const sock = whatsapp.getSock();
     if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
+    if (req.body.jid) req.body.jid = stores.getPreferredJid(req.body.jid);
     const operator = getOperatorFromRequest(req);
     const lock = stores.ensureChatLockForOperator(req.body.jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
@@ -527,6 +530,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   app.post('/api/send/audio', upload.single('file'), async (req, res) => {
     const sock = whatsapp.getSock();
     if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
+    if (req.body.jid) req.body.jid = stores.getPreferredJid(req.body.jid);
     const operator = getOperatorFromRequest(req);
     const lock = stores.ensureChatLockForOperator(req.body.jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
@@ -559,6 +563,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   app.post('/api/send/document', upload.single('file'), async (req, res) => {
     const sock = whatsapp.getSock();
     if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
+    if (req.body.jid) req.body.jid = stores.getPreferredJid(req.body.jid);
     const operator = getOperatorFromRequest(req);
     const lock = stores.ensureChatLockForOperator(req.body.jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
@@ -591,6 +596,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   app.post('/api/send/location', async (req, res) => {
     const sock = whatsapp.getSock();
     if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
+    if (req.body.jid) req.body.jid = stores.getPreferredJid(req.body.jid);
     const operator = getOperatorFromRequest(req);
     const lock = stores.ensureChatLockForOperator(req.body.jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
@@ -626,8 +632,9 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
     const operator = getOperatorFromRequest(req);
     const { messageId } = req.params;
-    const { jid, newContent } = req.body;
+    let { jid, newContent } = req.body;
     if (!jid || !newContent) return res.status(400).json({ error: 'jid and newContent required' });
+    jid = stores.getPreferredJid(jid);
     const lock = stores.ensureChatLockForOperator(jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
 
@@ -658,8 +665,9 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
     const operator = getOperatorFromRequest(req);
     const { messageId } = req.params;
-    const jid = req.query.jid || req.body.jid;
+    let jid = req.query.jid || req.body.jid;
     if (!jid) return res.status(400).json({ error: 'jid required' });
+    jid = stores.getPreferredJid(jid);
     const lock = stores.ensureChatLockForOperator(jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
 
@@ -753,6 +761,8 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
 
     socket.on('open_chat', ({ jid }) => {
       console.log(`[Bridge] open_chat event received for JID: ${jid}`);
+      socket.activeJid = jid;
+      whatsapp.markChatAsRead(jid);
       if (jid.endsWith('@lid') && !stores.lidToJid[jid]) {
         stores.resolveLidToPhoneAsync(jid).then((pn) => {
           if (pn) {
@@ -797,9 +807,11 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       });
     });
 
-    socket.on('send_message', async ({ jid, text, clientTempId, quotedMessageId }) => {
+    socket.on('send_message', async (data) => {
       const sock = whatsapp.getSock();
       if (!sock || whatsapp.getStatus() !== 'connected') return;
+      let { jid, text, clientTempId, quotedMessageId } = data;
+      if (jid) jid = stores.getPreferredJid(jid);
       const operator = getOperatorFromSocket(socket);
       const lock = stores.ensureChatLockForOperator(jid, operator);
       if (!lock.ok) return stores.sendLockError(socket, lock);
@@ -825,13 +837,16 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
         });
         socket.emit('message_ack', { clientTempId, serverId: sentMsg.id, timestamp: sentMsg.timestamp });
       } catch (e) {
+        socket.emit('message_failed', { clientTempId, jid, error: e.message });
         socket.emit('error', { message: e.message });
       }
     });
 
-    socket.on('edit_message', async ({ jid, messageId, newContent }) => {
+    socket.on('edit_message', async (data) => {
       const sock = whatsapp.getSock();
       if (!sock || whatsapp.getStatus() !== 'connected') return;
+      let { jid, messageId, newContent } = data;
+      if (jid) jid = stores.getPreferredJid(jid);
       const operator = getOperatorFromSocket(socket);
       const lock = stores.ensureChatLockForOperator(jid, operator);
       if (!lock.ok) return stores.sendLockError(socket, lock);
@@ -869,9 +884,11 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       }
     });
 
-    socket.on('delete_message', async ({ jid, messageId }) => {
+    socket.on('delete_message', async (data) => {
       const sock = whatsapp.getSock();
       if (!sock || whatsapp.getStatus() !== 'connected') return;
+      let { jid, messageId } = data;
+      if (jid) jid = stores.getPreferredJid(jid);
       const operator = getOperatorFromSocket(socket);
       const lock = stores.ensureChatLockForOperator(jid, operator);
       if (!lock.ok) return stores.sendLockError(socket, lock);
