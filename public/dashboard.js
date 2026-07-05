@@ -2137,12 +2137,130 @@
       showToast(notificationsMuted ? 'Notifications silenced' : 'Notifications active', 'info');
     }
 
+    // ─── New Chat Functions ───────────────────────────────────────────────────────
+    function openNewChatModal() {
+      document.getElementById('newChatOverlay').classList.remove('hidden');
+      document.getElementById('newChatPhoneNumber').value = '';
+      document.getElementById('newChatSearchInput').value = '';
+      document.getElementById('newChatPhoneNumber').focus();
+      loadContactsForNewChat();
+    }
+
+    function closeNewChatModal() {
+      document.getElementById('newChatOverlay').classList.add('hidden');
+    }
+
+    async function loadContactsForNewChat() {
+      if (socket) {
+        try {
+          const res = await fetch(`${bridgeUrl}/api/contacts`);
+          allContacts = await res.json();
+        } catch (e) {
+          console.error('Failed to load contacts for new chat:', e);
+        }
+      }
+      renderNewChatContacts(allContacts);
+    }
+
+    function renderNewChatContacts(contacts) {
+      const list = document.getElementById('newChatContactsList');
+      list.innerHTML = '';
+      if (!contacts || contacts.length === 0) {
+        list.innerHTML = '<div style="padding:12px;text-align:center;color:var(--muted);font-size:12px">No contacts found</div>';
+        return;
+      }
+      contacts.forEach(contact => {
+        const item = document.createElement('div');
+        item.className = 'new-chat-contact-item';
+        item.onclick = () => {
+          openContactChat(contact);
+          closeNewChatModal();
+        };
+
+        let cleanName = cleanJid(contact.name);
+        const cleanPhone = contact.phone ? cleanJid(contact.phone) : '';
+        const isLidOrJidName = (cleanName === cleanJid(contact.id) || cleanName.startsWith('LID: ') || /^\+?1\d{14}$/.test(cleanName.replace(/\s+/g, '')) || /^\+?\d{10,}$/.test(cleanName.replace(/\s+/g, '')));
+        if (isLidOrJidName && cleanPhone && cleanPhone !== cleanName) {
+          cleanName = cleanPhone;
+        }
+        const avatarInitial = (cleanName.startsWith('+') ? cleanName.slice(1) : cleanName || '?')[0].toUpperCase();
+
+        item.innerHTML = `
+          <div class="chat-avatar personal" style="width:28px;height:28px;font-size:11px;flex-shrink:0">${avatarInitial}</div>
+          <div style="flex:1;min-width:0">
+            <div class="new-chat-contact-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${cleanName}</div>
+            <div class="new-chat-contact-phone">+${contact.phone.split(':')[0]}</div>
+          </div>
+        `;
+        list.appendChild(item);
+      });
+    }
+
+    function onNewChatSearch(q) {
+      const filtered = allContacts.filter(c => {
+        const name = (c.name || '').toLowerCase();
+        const phone = (c.phone || '').toLowerCase();
+        const term = q.toLowerCase();
+        return name.includes(term) || phone.includes(term);
+      });
+      renderNewChatContacts(filtered);
+    }
+
+    function submitNewChatUnknown() {
+      const ccInput = document.getElementById('newChatCountryCode');
+      const phoneInput = document.getElementById('newChatPhoneNumber');
+      const countryCode = ccInput.value.trim();
+      const phoneNumber = phoneInput.value.trim();
+
+      const ccClean = countryCode.replace(/\D/g, '');
+      const phoneClean = phoneNumber.replace(/\D/g, '');
+
+      if (!ccClean) {
+        showToast('Please enter a country code', 'error');
+        ccInput.focus();
+        return;
+      }
+      if (!phoneClean) {
+        showToast('Please enter a phone number', 'error');
+        phoneInput.focus();
+        return;
+      }
+
+      openUnknownNumberChat(ccClean, phoneClean);
+      closeNewChatModal();
+    }
+
+    function openUnknownNumberChat(cc, phone) {
+      const jid = `${cc}${phone}@s.whatsapp.net`;
+      let chat = allChats.find(c => c.id === jid);
+      if (!chat) {
+        chat = {
+          id: jid,
+          name: `+${cc} ${phone}`,
+          type: 'personal',
+          lastMsg: '',
+          timestamp: Math.floor(Date.now() / 1000),
+          unreadCount: 0,
+          phone: `${cc}${phone}`
+        };
+        allChats.unshift(chat);
+      }
+      switchSidebarTab('chats');
+      openChat(chat, null);
+    }
+
     // Expose toggle globally for HTML onclick handler
     window.toggleNotifications = toggleNotifications;
     // Expose reply functions globally (called from dynamically built HTML onclick attributes)
     window.startReply = startReply;
     window.cancelReply = cancelReply;
     window.scrollToMessage = scrollToMessage;
+
+    // Expose new chat functions globally
+    window.openNewChatModal = openNewChatModal;
+    window.closeNewChatModal = closeNewChatModal;
+    window.submitNewChatUnknown = submitNewChatUnknown;
+    window.onNewChatSearch = onNewChatSearch;
 
     // ─── Internet Connectivity Status ──────────────────────────────────────────────
     async function checkInternetConnectivity() {

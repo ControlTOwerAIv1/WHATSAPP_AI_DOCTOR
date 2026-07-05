@@ -63,6 +63,28 @@
     </div>
   </div>
 
+  <!-- New Chat Overlay -->
+  <div class="new-chat-overlay hidden" id="newChatOverlay">
+    <div class="new-chat-box">
+      <div class="new-chat-header">
+        <div class="new-chat-title">New Chat</div>
+        <button class="new-chat-close" onclick="closeNewChatModal()">✕</button>
+      </div>
+      <div class="new-chat-input-row">
+        <input type="text" class="country-code-input" id="newChatCountryCode" placeholder="+91" value="+91" maxlength="6">
+        <input type="text" class="phone-number-input" id="newChatPhoneNumber" placeholder="Phone number" onkeydown="if(event.key==='Enter')submitNewChatUnknown()">
+        <button class="btn btn-primary" onclick="submitNewChatUnknown()">Chat</button>
+      </div>
+      <div style="font-size: 11px; color: var(--muted); margin-bottom: 16px; margin-top: -10px;">
+        Enter country code (e.g. +91) and phone number to message an unknown number.
+      </div>
+      <div class="new-chat-search-wrap">
+        <input type="text" class="new-chat-search-input" id="newChatSearchInput" placeholder="Search contacts..." oninput="onNewChatSearch(this.value)">
+      </div>
+      <div class="new-chat-contacts-list" id="newChatContactsList"></div>
+    </div>
+  </div>
+
   <!-- Top Bar -->
   <div class="topbar">
     <div style="display:flex;align-items:center;gap:16px">
@@ -93,8 +115,17 @@
     <!-- Sidebar -->
     <div class="sidebar" style="position: relative;">
       <div class="sidebar-header">
-        <div class="sidebar-title">Conversations</div>
-        <div class="count-badge" id="chatCount">0</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div class="sidebar-title">Conversations</div>
+          <div class="count-badge" id="chatCount">0</div>
+        </div>
+        <button class="new-chat-btn" onclick="openNewChatModal()" title="New Chat">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            <line x1="12" y1="8" x2="12" y2="14"/>
+            <line x1="9" y1="11" x2="15" y2="11"/>
+          </svg>
+        </button>
       </div>
       <div class="search-wrap">
         <input class="search-input" id="searchInput" placeholder="Search contacts…" oninput="onSearch(this.value)"
