@@ -223,15 +223,18 @@
       const claimBtn = document.getElementById('claimChatBtn');
       const releaseBtn = document.getElementById('releaseChatBtn');
       const lockNote = document.getElementById('lockNote');
+      const searchBtn = document.getElementById('chatSearchBtn');
       if (!activeChat) {
         assignmentPill.textContent = 'Unassigned';
         assignmentPill.className = 'assignment-pill';
         claimBtn.style.display = 'none';
         releaseBtn.style.display = 'none';
+        if (searchBtn) searchBtn.style.display = 'none';
         lockNote.classList.remove('visible');
         lockNote.textContent = '';
         return;
       }
+      if (searchBtn) searchBtn.style.display = 'inline-flex';
 
       let meta = (activeChat.type === 'group' || activeChat.type === 'community')
         ? `${activeChat.participants || '?'} participants`
@@ -664,8 +667,139 @@
       }
     });
 
+    function toggleChatSearch(forceState) {
+      const panel = document.getElementById('chatSearchPanel');
+      if (!panel) return;
+      
+      const isCurrentlyHidden = panel.classList.contains('hidden');
+      const show = (forceState !== undefined) ? forceState : isCurrentlyHidden;
+      
+      if (show) {
+        panel.classList.remove('hidden');
+        const input = document.getElementById('chatSearchInput');
+        input.value = '';
+        input.focus();
+        onChatSearchInput('');
+      } else {
+        panel.classList.add('hidden');
+        document.getElementById('chatSearchInput').value = '';
+      }
+    }
+
+    let chatSearchTimer = null;
+    function onChatSearchInput(q) {
+      clearTimeout(chatSearchTimer);
+      
+      const resultsEl = document.getElementById('chatSearchPanelResults');
+      if (!resultsEl) return;
+      
+      const query = q.trim();
+      if (!query) {
+        resultsEl.innerHTML = '<div class="chat-search-empty">Type to search message history...</div>';
+        return;
+      }
+      
+      resultsEl.innerHTML = '<div class="chat-search-empty"><div class="spinner" style="display:inline-block; width: 14px; height: 14px; border-width: 2px; vertical-align: middle; margin-right: 6px;"></div> Searching...</div>';
+      
+      chatSearchTimer = setTimeout(async () => {
+        if (!activeChat) return;
+        try {
+          const res = await fetch(`${bridgeUrl}/api/messages/search?jid=${encodeURIComponent(activeChat.id)}&q=${encodeURIComponent(query)}`);
+          if (!res.ok) throw new Error('Search failed');
+          const data = await res.json();
+          const matched = data.messages || [];
+          
+          if (matched.length === 0) {
+            resultsEl.innerHTML = '<div class="chat-search-empty">No messages found</div>';
+          } else {
+            resultsEl.innerHTML = matched.map(m => {
+              const dateStr = formatDate(m.timestamp * 1000);
+              const sender = m.fromMe ? 'You' : (m.sender || 'Them');
+              
+              let bodyText = m.content || '';
+              if (m.mediaType && m.mediaType !== 'text') {
+                const mediaIcons = { image: '🖼️ Image', video: '🎥 Video', voice: '🎤 Voice', audio: '🎵 Audio', document: '📄 Document', sticker: '😊 Sticker', location: '📍 Location' };
+                const label = mediaIcons[m.mediaType] || m.mediaType;
+                bodyText = `<span style="opacity:0.7">[${label}]</span> ${bodyText}`.trim();
+              }
+              
+              // Escape quotes in parameters
+              const safeMsgId = m.id.replace(/'/g, "\\'");
+              
+              return `
+                <div class="chat-search-result-item" onclick="scrollToOrLoadMessage('${safeMsgId}', ${m.timestamp})">
+                  <div class="chat-search-result-header">
+                    <span class="chat-search-result-sender">${sender}</span>
+                    <span class="chat-search-result-time">${dateStr}</span>
+                  </div>
+                  <div class="chat-search-result-body">${bodyText}</div>
+                </div>
+              `;
+            }).join('');
+          }
+        } catch (e) {
+          resultsEl.innerHTML = `<div class="chat-search-empty" style="color:var(--danger)">Error: ${e.message}</div>`;
+        }
+      }, 300);
+    }
+
+    async function scrollToOrLoadMessage(messageId, timestamp) {
+      let el = document.getElementById('msg-' + messageId);
+      if (el) {
+        scrollToMessage(messageId);
+        return;
+      }
+      
+      // Not in DOM. We need to load older messages.
+      showToast('Loading older messages to locate match...', 'info');
+      
+      let attempts = 0;
+      const maxAttempts = 10;
+      while (!el && attempts < maxAttempts) {
+        const firstMsgRow = document.querySelector('.messages-area .message-row');
+        const before = firstMsgRow?.dataset.timestamp || null;
+        if (!before) break;
+        
+        try {
+          let url = `${bridgeUrl}/api/messages?jid=${encodeURIComponent(activeChat.id)}&limit=50`;
+          if (before) url += `&before=${encodeURIComponent(before)}`;
+          const res = await fetch(url);
+          const data = await res.json();
+          const msgs = data.messages || data;
+          if (!msgs.length) {
+            chatHasMore[activeChat.id] = false;
+            document.getElementById('loadMoreIndicator').style.display = 'none';
+            break;
+          }
+          chatHasMore[activeChat.id] = data.hasMore !== false;
+          document.getElementById('loadMoreIndicator').style.display = chatHasMore[activeChat.id] ? 'block' : 'none';
+          
+          // Prepend messages in reverse order to maintain correct scroll position and sequence
+          msgs.reverse().forEach(m => {
+            appendMessage(normalizeMessage(m), false, true);
+          });
+          
+          el = document.getElementById('msg-' + messageId);
+          if (el) {
+            break;
+          }
+        } catch (e) {
+          console.error(e);
+          break;
+        }
+        attempts++;
+      }
+      
+      if (el) {
+        scrollToMessage(messageId);
+      } else {
+        showToast('Could not find the message in history', 'error');
+      }
+    }
+
     function openChat(chat, itemEl) {
       activeChat = chat;
+      toggleChatSearch(false);
       cancelEdit();
       cancelReply();
       updateChatItemHighlight();
@@ -2261,6 +2395,11 @@
     window.closeNewChatModal = closeNewChatModal;
     window.submitNewChatUnknown = submitNewChatUnknown;
     window.onNewChatSearch = onNewChatSearch;
+
+    // Expose search functions globally
+    window.toggleChatSearch = toggleChatSearch;
+    window.onChatSearchInput = onChatSearchInput;
+    window.scrollToOrLoadMessage = scrollToOrLoadMessage;
 
     // ─── Internet Connectivity Status ──────────────────────────────────────────────
     async function checkInternetConnectivity() {

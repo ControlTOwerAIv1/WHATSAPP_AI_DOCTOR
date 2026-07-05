@@ -169,6 +169,12 @@
             <div class="assignment-wrap">
               <div class="assignment-pill" id="assignmentPill">Unassigned</div>
               <div class="assignment-actions">
+                <button class="btn btn-ghost" id="chatSearchBtn" onclick="toggleChatSearch()" title="Search chat history" style="display: none; padding: 7px 12px; align-items: center; justify-content: center;">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display: block;">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                </button>
                 <button class="btn btn-ghost" id="claimChatBtn" onclick="claimActiveChat()">Claim</button>
                 <button class="btn btn-ghost" id="releaseChatBtn" onclick="releaseActiveChat()">Release</button>
               </div>
@@ -177,9 +183,25 @@
         </div>
         <div class="lock-note" id="lockNote"></div>
 
-        <div class="messages-area" id="messagesArea">
-          <div class="load-more-indicator" id="loadMoreIndicator" style="display:none">
-            <button class="load-more-btn" onclick="loadMoreMessages()">↑ Load older messages</button>
+        <div class="chat-body" style="display:flex;flex:1;overflow:hidden;position:relative;">
+          <div class="messages-area" id="messagesArea">
+            <div class="load-more-indicator" id="loadMoreIndicator" style="display:none">
+              <button class="load-more-btn" onclick="loadMoreMessages()">↑ Load older messages</button>
+            </div>
+          </div>
+
+          <!-- Chat Search Panel -->
+          <div class="chat-search-panel hidden" id="chatSearchPanel">
+            <div class="chat-search-panel-header">
+              <span>Search Messages</span>
+              <button class="btn-close" onclick="toggleChatSearch(false)">✕</button>
+            </div>
+            <div class="chat-search-panel-input-wrapper">
+              <input type="text" class="chat-search-input" id="chatSearchInput" placeholder="Search message history..." oninput="onChatSearchInput(this.value)">
+            </div>
+            <div class="chat-search-panel-results" id="chatSearchPanelResults">
+              <div class="chat-search-empty">Search for messages in this chat.</div>
+            </div>
           </div>
         </div>
 

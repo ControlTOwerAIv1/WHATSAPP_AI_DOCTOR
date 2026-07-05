@@ -416,6 +416,43 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     res.json({ messages: sliced, hasMore: total > sliced.length, total, chat: stores.normalizeChat(stores.chatStore[jid]) || null });
   });
 
+  app.get('/api/messages/search', async (req, res) => {
+    try {
+      const { jid, q } = req.query;
+      if (!jid || !q) {
+        return res.status(400).json({ error: 'jid and query q are required' });
+      }
+
+      const altJid = jid.endsWith('@lid') ? stores.lidToJid[jid] : stores.jidToLid[jid];
+      const threadJids = altJid ? [jid, altJid] : [jid];
+      const placeholders = threadJids.map(() => '?').join(',');
+
+      const sql = `
+        SELECT payload FROM messages
+        WHERE jid IN (${placeholders})
+          AND (
+            json_extract(payload, '$.content') LIKE ?
+            OR json_extract(payload, '$.fileName') LIKE ?
+            OR json_extract(payload, '$.sender') LIKE ?
+            OR json_extract(payload, '$.operatorName') LIKE ?
+          )
+        ORDER BY timestamp DESC, id DESC
+      `;
+      
+      const searchPattern = `%${q}%`;
+      const queryParams = [...threadJids, searchPattern, searchPattern, searchPattern, searchPattern];
+      
+      const stmt = database.db.prepare(sql);
+      const rows = stmt.all(...queryParams);
+      
+      const messages = rows.map((row) => stores.normalizeMessageRecord(JSON.parse(row.payload)));
+      res.json({ messages });
+    } catch (err) {
+      console.error('[Bridge] Message search failed:', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post('/api/chats/:jid/claim', (req, res) => {
     const operator = getOperatorFromRequest(req);
     const result = stores.assignChat(req.params.jid, operator);
