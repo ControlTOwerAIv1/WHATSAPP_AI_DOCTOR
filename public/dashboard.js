@@ -745,10 +745,10 @@
       switch (msg.mediaType) {
         case 'image':
           return `<img class="msg-image" src="${msg.mediaUrl}" alt="Image" onclick="openLightbox('${msg.mediaUrl}')">
-              ${msg.content ? `<div>${msg.content}</div>` : ''}`;
+              <div class="msg-text">${msg.content || ''}</div>`;
         case 'video':
           return `<video class="msg-video" controls><source src="${msg.mediaUrl}"></video>
-              ${msg.content ? `<div>${msg.content}</div>` : ''}`;
+              <div class="msg-text">${msg.content || ''}</div>`;
         case 'voice':
         case 'audio':
           return `<div style="margin-bottom:4px;font-size:11px;opacity:0.7">${msg.mediaType === 'voice' ? '🎤 Voice Message' : '🎵 Audio'}</div>
@@ -769,7 +769,7 @@
         <div><div style="font-size:13px;font-weight:600">${msg.content || 'Location'}</div><div style="font-size:11px;opacity:0.6">Open in Maps</div></div>
       </a>`;
         default:
-          return `<div>${msg.content || ''}</div>`;
+          return `<div class="msg-text">${msg.content || ''}</div>`;
       }
     }
 
@@ -915,8 +915,8 @@
       const bubble = row.querySelector('.msg-bubble');
       if (!bubble) return;
       // Update content
-      const contentDiv = bubble.querySelector('div:first-of-type');
-      if (contentDiv && !contentDiv.classList.contains('msg-sender') && !contentDiv.classList.contains('msg-time') && !contentDiv.classList.contains('msg-edited') && !contentDiv.classList.contains('msg-actions') && !contentDiv.classList.contains('msg-deleted')) {
+      const contentDiv = bubble.querySelector('.msg-text');
+      if (contentDiv) {
         contentDiv.textContent = newContent;
       }
       // Add/update edited mark
