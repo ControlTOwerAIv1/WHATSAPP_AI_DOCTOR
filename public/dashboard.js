@@ -20,6 +20,9 @@
     let sentTempIds = new Set();   // track locally-sent message IDs to avoid dupes
     const EDIT_WINDOW_SECONDS = 15 * 60;
     const DELETE_FOR_EVERYONE_WINDOW_SECONDS = 60 * 60 * 60;
+    let isInternetOnline = true;
+    let lastStatusClass = 'disconnected';
+    let lastStatusText = 'Offline';
 
     function currentOperator() {
       return { id: operatorId, name: operatorName || operatorId || 'Unknown' };
@@ -66,9 +69,19 @@
 
     // ─── Helpers ──────────────────────────────────────────────────────────────────
     function updateStatus(status, text) {
+      if (status !== undefined) lastStatusClass = status;
+      if (text !== undefined) lastStatusText = text;
+
       const pill = document.getElementById('statusPill');
-      pill.className = 'status-pill ' + status;
-      document.getElementById('statusText').textContent = text;
+      if (!pill) return;
+
+      if (!isInternetOnline) {
+        pill.className = 'status-pill disconnected';
+        document.getElementById('statusText').textContent = 'Device Offline';
+      } else {
+        pill.className = 'status-pill ' + lastStatusClass;
+        document.getElementById('statusText').textContent = lastStatusText;
+      }
     }
 
     function showToast(msg, type = 'success') {
@@ -2131,11 +2144,69 @@
     window.cancelReply = cancelReply;
     window.scrollToMessage = scrollToMessage;
 
+    // ─── Internet Connectivity Status ──────────────────────────────────────────────
+    async function checkInternetConnectivity() {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      try {
+        await fetch('https://www.google.com/favicon.ico?_cb=' + Date.now(), {
+          mode: 'no-cors',
+          cache: 'no-store',
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        return true;
+      } catch (err) {
+        clearTimeout(timeoutId);
+        // Fallback check to Cloudflare
+        try {
+          const fallbackController = new AbortController();
+          const fallbackTimeoutId = setTimeout(() => fallbackController.abort(), 3000);
+          await fetch('https://1.1.1.1/favicon.ico?_cb=' + Date.now(), {
+            mode: 'no-cors',
+            cache: 'no-store',
+            signal: fallbackController.signal
+          });
+          clearTimeout(fallbackTimeoutId);
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
+
+    async function updateInternetStatus() {
+      // 1. Quick check using navigator.onLine
+      let online = navigator.onLine;
+
+      // 2. If navigator.onLine says online, double check with a quick fetch ping
+      if (online) {
+        online = await checkInternetConnectivity();
+      }
+
+      if (online !== isInternetOnline) {
+        isInternetOnline = online;
+        updateStatus(); // Trigger status pill redraw with updated network state
+        if (!online) {
+          showToast('You are offline. Please check your internet connection.', 'error');
+        } else {
+          showToast('Internet connection restored', 'success');
+        }
+      }
+    }
+
     // ─── Init ─────────────────────────────────────────────────────────────────────
     // Show empty state initially
     document.getElementById('chatList').innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">Click "Connect Bridge" to start</div>';
     renderPanel();
     renderChatHeader();
+
+    // Internet connectivity check
+    updateInternetStatus();
+    setInterval(updateInternetStatus, 8000); // Check every 8 seconds
+
+    window.addEventListener('online', updateInternetStatus);
+    window.addEventListener('offline', updateInternetStatus);
 
     // Auto-connect to bridge on load
     const currentOrigin = window.location.protocol.startsWith('http') ? window.location.origin : bridgeUrl;
