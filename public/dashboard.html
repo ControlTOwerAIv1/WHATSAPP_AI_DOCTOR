@@ -174,7 +174,7 @@
           <div class="media-preview-strip" id="mediaPreviewStrip">
             <div class="preview-thumb" id="previewThumb"></div>
             <div class="preview-caption">
-              <input class="caption-input" id="captionInput" placeholder="Add a caption…">
+              <button type="button" class="attach-more-btn" onclick="attachMoreMediaDirectly()">📎 Attach more media</button>
             </div>
             <button class="btn btn-ghost" style="font-size:11px;padding:5px 10px" onclick="clearMedia()">✕
               Remove</button>
@@ -250,10 +250,10 @@
   </div>
 
   <!-- Hidden file inputs -->
-  <input type="file" id="fileInputImage" accept="image/*,image/gif" onchange="handleFileSelected('image',this)">
-  <input type="file" id="fileInputVideo" accept="video/*" onchange="handleFileSelected('video',this)">
-  <input type="file" id="fileInputAudio" accept="audio/*" onchange="handleFileSelected('audio',this)">
-  <input type="file" id="fileInputDocument" accept="*/*" onchange="handleFileSelected('document',this)">
+  <input type="file" id="fileInputImage" accept="image/*,image/gif" onchange="handleFileSelected('image',this)" multiple>
+  <input type="file" id="fileInputVideo" accept="video/*" onchange="handleFileSelected('video',this)" multiple>
+  <input type="file" id="fileInputAudio" accept="audio/*" onchange="handleFileSelected('audio',this)" multiple>
+  <input type="file" id="fileInputDocument" accept="*/*" onchange="handleFileSelected('document',this)" multiple>
   <input type="file" id="fileInputContacts" accept=".vcf" onchange="handleImportContacts(this)">
 
   <script src="dashboard.js"></script>

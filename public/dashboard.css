@@ -1112,6 +1112,19 @@
     }
 
     .preview-thumb {
+      display: flex;
+      gap: 12px;
+      overflow-x: auto;
+      max-width: 500px;
+      padding: 4px;
+      scrollbar-width: none; /* Firefox */
+    }
+
+    .preview-thumb::-webkit-scrollbar {
+      display: none; /* Chrome, Safari, Opera */
+    }
+
+    .preview-item {
       position: relative;
       flex-shrink: 0;
     }
@@ -1158,18 +1171,25 @@
       flex: 1;
     }
 
-    .caption-input {
-      width: 100%;
-      background: transparent;
-      border: none;
-      outline: none;
-      font-family: var(--font-whatsapp);
+    .attach-more-btn {
+      background: var(--surface);
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      color: var(--muted);
+      padding: 6px 12px;
       font-size: 12px;
-      color: var(--text);
+      font-family: var(--font-whatsapp);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
     }
 
-    .caption-input::placeholder {
-      color: var(--muted);
+    .attach-more-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--surface2);
     }
 
     /* Bottom row of input */

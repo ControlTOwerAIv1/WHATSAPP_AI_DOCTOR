@@ -7,7 +7,7 @@
     let operatorName = localStorage.getItem('whatsapp_relay_operator_name') || '';
     let connectorOperatorId = null;
     let connectorOperatorName = null;
-    let pendingMedia = null;
+    let pendingMediaList = [];
     let allChats = [];
     let allContacts = [];
     let searchTimer = null;
@@ -279,9 +279,13 @@
       input.disabled = disabled;
       sendBtn.disabled = disabled;
       attachBtn.disabled = disabled;
-      input.placeholder = disabled
-        ? `Locked by ${activeChat.assignedOperatorName || activeChat.assignedOperatorId}`
-        : 'Type a message… (Enter to send)';
+      if (disabled) {
+        input.placeholder = `Locked by ${activeChat.assignedOperatorName || activeChat.assignedOperatorId}`;
+      } else if (pendingMediaList.length > 0) {
+        input.placeholder = pendingMediaList[0].type === 'document' ? 'Document ready to send…' : 'Add a caption…';
+      } else {
+        input.placeholder = 'Type a message… (Enter to send)';
+      }
     }
 
     function getDocIcon(name = '') {
@@ -1201,7 +1205,7 @@
       }
 
       // Send media if pending
-      if (pendingMedia) {
+      if (pendingMediaList.length > 0) {
         await sendMedia();
         return;
       }
@@ -1275,52 +1279,66 @@
         showToast(`Conversation locked by ${activeChat.assignedOperatorName || activeChat.assignedOperatorId}`, 'error');
         return;
       }
-      const { file, type } = pendingMedia;
-      const caption = document.getElementById('captionInput').value || document.getElementById('messageInput').value || '';
-      const tempId = genTempId();
 
-      const previewMsg = {
-        id: tempId,
-        sender: operatorName,
-        operatorName,
-        content: caption,
-        time: formatTime(new Date()),
-        timestamp: Math.floor(Date.now() / 1000),
-        outgoing: true,
-        fromMe: true,
-        mediaType: type,
-        mediaUrl: pendingMedia.previewUrl || null,
-        fileName: file.name,
-        status: 1,
-      };
-      appendMessage(previewMsg);
-      sentTempIds.add(tempId);
+      const mediaItems = [...pendingMediaList];
+      const caption = document.getElementById('messageInput').value || '';
+
+      // Clear media preview and input immediately so UI is responsive
       clearMedia();
       document.getElementById('messageInput').value = '';
 
-      if (socket) {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('jid', activeChat.id);
-        formData.append('clientTempId', tempId);
-        if (caption) formData.append('caption', caption);
-        if (type === 'document') formData.append('filename', file.name);
+      // Loop over and send each media item sequentially
+      for (let i = 0; i < mediaItems.length; i++) {
+        const item = mediaItems[i];
+        const { file, type } = item;
+        const itemCaption = (i === 0) ? caption : '';
+        const tempId = genTempId();
 
-        try {
-          const res = await fetch(`${bridgeUrl}/api/send/${type}`, { method: 'POST', headers: operatorHeaders(), body: formData });
-          const data = await res.json();
-          if (data.success) {
-            showToast(`${type.charAt(0).toUpperCase() + type.slice(1)} sent!`);
-          } else {
-            showToast(data.error, 'error');
+        const previewMsg = {
+          id: tempId,
+          sender: operatorName,
+          operatorName,
+          content: itemCaption,
+          time: formatTime(new Date()),
+          timestamp: Math.floor(Date.now() / 1000),
+          outgoing: true,
+          fromMe: true,
+          mediaType: type,
+          mediaUrl: item.previewUrl || null,
+          fileName: file.name,
+          status: 1,
+        };
+        appendMessage(previewMsg);
+        sentTempIds.add(tempId);
+
+        if (socket) {
+          const formData = new FormData();
+          formData.append('file', file);
+          formData.append('jid', activeChat.id);
+          formData.append('clientTempId', tempId);
+          if (itemCaption) formData.append('caption', itemCaption);
+          if (type === 'document') formData.append('filename', file.name);
+
+          try {
+            const res = await fetch(`${bridgeUrl}/api/send/${type}`, {
+              method: 'POST',
+              headers: operatorHeaders(),
+              body: formData
+            });
+            const data = await res.json();
+            if (data.success) {
+              showToast(`${type.charAt(0).toUpperCase() + type.slice(1)} sent!`);
+            } else {
+              showToast(data.error, 'error');
+              updateMessageStatusInUI(tempId, 0);
+            }
+          } catch (e) {
+            showToast('Send failed: ' + e.message, 'error');
             updateMessageStatusInUI(tempId, 0);
           }
-        } catch (e) {
-          showToast('Send failed: ' + e.message, 'error');
-          updateMessageStatusInUI(tempId, 0);
+        } else {
+          showToast(`${type} ready to send (connect bridge first)`);
         }
-      } else {
-        showToast(`${type} ready to send (connect bridge first)`);
       }
     }
 
@@ -1329,8 +1347,17 @@
       document.getElementById('attachMenu').classList.toggle('open');
     }
 
+    function attachMoreMediaDirectly() {
+      if (pendingMediaList.length > 0) {
+        const lastType = pendingMediaList[pendingMediaList.length - 1].type;
+        triggerFileInput(lastType);
+      } else {
+        toggleAttachMenu();
+      }
+    }
+
     document.addEventListener('click', (e) => {
-      if (!e.target.closest('.attach-wrap')) {
+      if (!e.target.closest('.attach-wrap') && !e.target.closest('.attach-more-btn')) {
         document.getElementById('attachMenu').classList.remove('open');
       }
     });
@@ -1341,37 +1368,68 @@
     }
 
     function handleFileSelected(type, input) {
-      const file = input.files[0];
-      if (!file) return;
-      pendingMedia = { file, type };
+      if (!input.files || input.files.length === 0) return;
 
+      if (pendingMediaList.length + input.files.length > 100) {
+        showToast('Maximum 100 attachments allowed at a time', 'error');
+        return;
+      }
+
+      for (let i = 0; i < input.files.length; i++) {
+        const file = input.files[i];
+        const previewUrl = (type === 'image' || type === 'video') ? URL.createObjectURL(file) : null;
+        pendingMediaList.push({
+          id: genTempId(),
+          file,
+          type,
+          previewUrl
+        });
+      }
+
+      input.value = '';
+      renderMediaPreview();
+    }
+
+    function renderMediaPreview() {
       const strip = document.getElementById('mediaPreviewStrip');
       const thumb = document.getElementById('previewThumb');
       thumb.innerHTML = '';
 
-      if (type === 'image') {
-        const url = URL.createObjectURL(file);
-        pendingMedia.previewUrl = url;
-        thumb.innerHTML = `<img src="${url}" alt="preview"><button class="remove-btn" onclick="clearMedia()">✕</button>`;
-      } else if (type === 'video') {
-        const url = URL.createObjectURL(file);
-        pendingMedia.previewUrl = url;
-        thumb.innerHTML = `<video src="${url}" style="width:60px;height:60px;object-fit:cover;border-radius:6px;"></video><button class="remove-btn" onclick="clearMedia()">✕</button>`;
-      } else {
-        thumb.innerHTML = `<div class="preview-doc-chip">${getDocIcon(file.name)} ${file.name}</div>`;
+      if (pendingMediaList.length === 0) {
+        strip.classList.remove('visible');
+        refreshComposerState();
+        return;
       }
 
+      pendingMediaList.forEach((item) => {
+        const itemEl = document.createElement('div');
+        itemEl.className = 'preview-item';
+
+        if (item.type === 'image') {
+          itemEl.innerHTML = `<img src="${item.previewUrl}" alt="preview"><button type="button" class="remove-btn" onclick="removePendingMediaItem('${item.id}')">✕</button>`;
+        } else if (item.type === 'video') {
+          itemEl.innerHTML = `<video src="${item.previewUrl}"></video><button type="button" class="remove-btn" onclick="removePendingMediaItem('${item.id}')">✕</button>`;
+        } else {
+          itemEl.innerHTML = `<div class="preview-doc-chip">${getDocIcon(item.file.name)} ${item.file.name}</div><button type="button" class="remove-btn" onclick="removePendingMediaItem('${item.id}')">✕</button>`;
+        }
+        thumb.appendChild(itemEl);
+      });
+
       strip.classList.add('visible');
-      document.getElementById('messageInput').placeholder = type === 'document' ? 'Document ready to send…' : 'Add a caption…';
-      input.value = '';
+      refreshComposerState();
+    }
+
+    function removePendingMediaItem(id) {
+      const idx = pendingMediaList.findIndex(item => item.id === id);
+      if (idx >= 0) {
+        pendingMediaList.splice(idx, 1);
+      }
+      renderMediaPreview();
     }
 
     function clearMedia() {
-      pendingMedia = null;
-      document.getElementById('mediaPreviewStrip').classList.remove('visible');
-      document.getElementById('previewThumb').innerHTML = '';
-      document.getElementById('captionInput').value = '';
-      refreshComposerState();
+      pendingMediaList = [];
+      renderMediaPreview();
     }
 
     // ─── Location Dialog ──────────────────────────────────────────────────────────
@@ -1792,6 +1850,16 @@
           const tempRow = document.getElementById('msg-' + msg.clientTempId);
           if (tempRow) {
             tempRow.id = 'msg-' + msg.id;
+            tempRow.dataset.id = msg.id;
+            if (msg.timestamp) tempRow.dataset.timestamp = msg.timestamp;
+            tempRow.querySelectorAll('button[onclick]').forEach(btn => {
+              const onclickVal = btn.getAttribute('onclick');
+              if (onclickVal) {
+                const newVal = onclickVal.replace(new RegExp(`'${msg.clientTempId}'`, 'g'), `'${msg.id}'`)
+                                         .replace(new RegExp(`"${msg.clientTempId}"`, 'g'), `"${msg.id}"`);
+                btn.setAttribute('onclick', newVal);
+              }
+            });
             const timeEl = tempRow.querySelector('.msg-time');
             if (timeEl) timeEl.textContent = formatTime(new Date((msg.timestamp || Math.floor(Date.now() / 1000)) * 1000));
           }
@@ -1856,6 +1924,15 @@
           if (tempRow) {
             tempRow.id = 'msg-' + serverId;
             tempRow.dataset.id = serverId;
+            if (timestamp) tempRow.dataset.timestamp = timestamp;
+            tempRow.querySelectorAll('button[onclick]').forEach(btn => {
+              const onclickVal = btn.getAttribute('onclick');
+              if (onclickVal) {
+                const newVal = onclickVal.replace(new RegExp(`'${clientTempId}'`, 'g'), `'${serverId}'`)
+                                         .replace(new RegExp(`"${clientTempId}"`, 'g'), `"${serverId}"`);
+                btn.setAttribute('onclick', newVal);
+              }
+            });
             const tickEl = document.getElementById('status-tick-' + clientTempId);
             if (tickEl) {
               tickEl.id = 'status-tick-' + serverId;
