@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: 'wa-relay',
+      name: 'echo',
       script: 'bridge.js',
       watch: false,
       max_memory_restart: '512M',

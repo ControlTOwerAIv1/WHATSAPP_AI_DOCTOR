@@ -3,8 +3,8 @@
     let bridgeUrl = 'http://localhost:3001';
     let activeChat = null;         // { id, name, type, ... }
     let currentTab = 'operators';
-    let operatorId = localStorage.getItem('whatsapp_relay_operator_id') || '';
-    let operatorName = localStorage.getItem('whatsapp_relay_operator_name') || '';
+    let operatorId = localStorage.getItem('whatsapp_echo_operator_id') || '';
+    let operatorName = localStorage.getItem('whatsapp_echo_operator_name') || '';
     let connectorOperatorId = null;
     let connectorOperatorName = null;
     let pendingMediaList = [];
@@ -218,6 +218,19 @@
       return false;
     }
 
+    function getAvatarContent(avatarType, initial) {
+      if (avatarType === 'group') {
+        return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>`;
+      } else if (avatarType === 'community') {
+        return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>`;
+      } else if (avatarType === 'channel') {
+        return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>`;
+      } else if (avatarType === 'status') {
+        return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a7 7 0 0 1 7 7M5 12a7 7 0 0 1 7-7"></path></svg>`;
+      }
+      return initial;
+    }
+
     function renderChatHeader() {
       const assignmentPill = document.getElementById('assignmentPill');
       const claimBtn = document.getElementById('claimChatBtn');
@@ -256,8 +269,23 @@
       const isVerified = Boolean(activeChat.verifiedName);
       const verifiedBadge = isVerified ? `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="#0095f6" viewBox="0 0 16 16" style="margin-left:6px;vertical-align:middle;flex-shrink:0;" title="Verified Business"><path d="M10.067.87a2.89 2.89 0 0 0-4.134 0l-.622.622-2.08-.02a2.89 2.89 0 0 0-2.91 2.91l.02 2.08-.622.622a2.89 2.89 0 0 0 0 4.134l.622.622-.02 2.08a2.89 2.89 0 0 0 2.91 2.91l2.08-.02.622.622a2.89 2.89 0 0 0 4.134 0l.622-.622 2.08.02a2.89 2.89 0 0 0 2.91-2.91l-.02-2.08.622-.622a2.89 2.89 0 0 0 0-4.134l-.622-.622.02-2.08a2.89 2.89 0 0 0-2.91-2.91l-2.08.02-.622-.622zM8.14 10.146a.75.75 0 0 1-1.079-.02L4.697 7.731a.75.75 0 1 1 1.071-1.05l1.829 1.828L11.83 4.5a.75.75 0 1 1 1.06 1.06L8.14 10.147z"/></svg>` : '';
 
+      const isGroupChat = activeChat.type === 'group' || activeChat.type === 'community' || activeChat.id.endsWith('@g.us');
+
+      let avatarType = 'personal';
+      if (activeChat.type === 'community') {
+        avatarType = 'community';
+      } else if (activeChat.type === 'channel' || activeChat.id.endsWith('@newsletter')) {
+        avatarType = 'channel';
+      } else if (activeChat.type === 'status' || activeChat.id.endsWith('@broadcast')) {
+        avatarType = 'status';
+      } else if (isGroupChat) {
+        avatarType = 'group';
+      }
+
       const topAvatarInitial = (topDisplayName.startsWith('+') ? topDisplayName.slice(1) : topDisplayName || '?')[0].toUpperCase();
-      document.getElementById('chatTopAvatar').textContent = topAvatarInitial;
+      const topAvatarEl = document.getElementById('chatTopAvatar');
+      topAvatarEl.innerHTML = getAvatarContent(avatarType, topAvatarInitial);
+      topAvatarEl.className = 'chat-topbar-avatar ' + avatarType;
       document.getElementById('chatTopName').innerHTML = `<span style="display:inline-flex;align-items:center;">${topDisplayName}${verifiedBadge}</span>`;
       document.getElementById('chatTopMeta').textContent = meta;
 
@@ -339,7 +367,7 @@
     function saveOperatorName() {
       const name = document.getElementById('operatorNameInput').value.trim();
       operatorName = name || operatorId;
-      localStorage.setItem('whatsapp_relay_operator_name', operatorName);
+      localStorage.setItem('whatsapp_echo_operator_name', operatorName);
       document.getElementById('namePrompt').classList.add('hidden');
       if (socket?.connected) {
         socket.emit('set_operator_name', { name: operatorName });
@@ -468,7 +496,7 @@
         const avatarInitial = (displayName.startsWith('+') ? displayName.slice(1) : displayName || '?')[0].toUpperCase();
 
         item.innerHTML = `
-      <div class="chat-avatar ${avatarType}">${avatarInitial}</div>
+      <div class="chat-avatar ${avatarType}">${getAvatarContent(avatarType, avatarInitial)}</div>
       <div class="chat-info">
         <div class="chat-name-row">
           <div class="chat-name" style="display:flex;align-items:center;min-width:0;width:100%;">
@@ -619,12 +647,25 @@
         if (isLidOrJidName && cleanPhone && cleanPhone !== cleanName) {
           cleanName = cleanPhone;
         }
+        const isGroup = r.id.endsWith('@g.us') || r.type === 'group';
+        const isCommunity = r.type === 'community';
+        const isChannel = r.id.endsWith('@newsletter') || r.type === 'channel';
+        const isStatus = r.id.endsWith('@broadcast') || r.type === 'status';
+
+        let avatarType = 'personal';
+        if (isCommunity) avatarType = 'community';
+        else if (isChannel) avatarType = 'channel';
+        else if (isStatus) avatarType = 'status';
+        else if (isGroup) avatarType = 'group';
+
         const avatarInitial = (cleanName.startsWith('+') ? cleanName.slice(1) : cleanName || '?')[0].toUpperCase();
         return `
       <div class="search-result-item" onclick="openChatById('${r.id}','${cleanName.replace(/'/g, "\\'")}')">
-        <div class="chat-avatar personal" style="width:28px;height:28px;font-size:11px;flex-shrink:0">${avatarInitial}</div>
+        <div class="chat-avatar ${avatarType}" style="width:28px;height:28px;font-size:11px;flex-shrink:0">${getAvatarContent(avatarType, avatarInitial)}</div>
         <div>
-          <div style="font-weight:600">${cleanName}</div>
+          <div style="font-weight:600; display:flex; align-items:center;">
+            <span>${cleanName}</span>
+          </div>
           <div class="search-result-phone">${cleanPhone}</div>
         </div>
       </div>`;
@@ -948,6 +989,16 @@
         </div>`;
     }
 
+    function getSenderColor(name) {
+      if (!name) return 'var(--accent)';
+      let hash = 0;
+      for (let i = 0; i < name.length; i++) {
+        hash = name.charCodeAt(i) + ((hash << 5) - hash);
+      }
+      const hue = Math.abs(hash) % 360;
+      return `hsl(${hue}, 85%, 65%)`;
+    }
+
     function appendMessage(msg, scroll = true, prepend = false) {
       const area = document.getElementById('messagesArea');
       // Check for duplicate
@@ -962,6 +1013,12 @@
       const row = document.createElement('div');
       row.id = 'msg-' + msg.id;
       row.className = 'message-row ' + (outgoing ? 'outgoing' : 'incoming');
+      
+      const isGroup = activeChat?.type === 'group' || activeChat?.type === 'community';
+      if (isGroup) {
+        row.classList.add('group-msg');
+      }
+
       row.dataset.timestamp = msg.timestamp || '';
       row.dataset.fromMe = outgoing ? '1' : '0';
       row.dataset.mediaType = msg.mediaType || 'text';
@@ -982,7 +1039,6 @@
       const cleanInitialName = cleanJid(initialName).replace('+', '');
       const initial = (cleanInitialName || '?')[0].toUpperCase();
       const timeStr = msg.time || (msg.timestamp ? formatTime(new Date(msg.timestamp * 1000)) : '');
-      const isGroup = activeChat?.type === 'group' || activeChat?.type === 'community';
       const editedMark = msg.editedAt ? '<div class="msg-edited">(edited)</div>' : '';
       const showSender = (!outgoing && isGroup) || (outgoing && Boolean(msg.operatorName));
       let contentHtml;
@@ -1032,10 +1088,29 @@
         statusHtml = `<span class="msg-status-ticks ${tickClass}" id="status-tick-${msg.id}" title="${tooltip}">${tickIcon}</span>`;
       }
 
+      let msgAvatarType = 'personal';
+      if (outgoing) {
+        msgAvatarType = 'operator';
+      } else if (isGroup) {
+        msgAvatarType = 'group';
+      } else if (activeChat) {
+        if (activeChat.type === 'community') msgAvatarType = 'community';
+        else if (activeChat.type === 'channel' || activeChat.id.endsWith('@newsletter')) msgAvatarType = 'channel';
+      }
+
+      const senderColor = isGroup ? getSenderColor(msg.sender || msg.participant) : 'var(--accent)';
+
+      let msgAvatarContent = initial;
+      if (msgAvatarType === 'channel') {
+        msgAvatarContent = getAvatarContent('channel', initial);
+      } else if (msgAvatarType === 'community') {
+        msgAvatarContent = getAvatarContent('community', initial);
+      }
+
       row.innerHTML = `
-    <div class="msg-avatar">${initial}</div>
+    <div class="msg-avatar ${msgAvatarType}">${msgAvatarContent}</div>
     <div class="msg-bubble">
-      ${showSender ? `<div class="msg-sender">${senderName}</div>` : ''}
+      ${showSender ? `<div class="msg-sender" style="color: ${senderColor}">${senderName}</div>` : ''}
       ${contentHtml}
       ${msg.deleted ? '' : `<div class="msg-time">${timeStr}${editedMark}${statusHtml}</div>`}
       ${!msg.deleted && (allowReply || allowEdit || allowDelete) ? `
@@ -1920,8 +1995,8 @@
       if (socket) { socket.disconnect(); }
 
       // Load operator info from localStorage if available
-      const savedId = localStorage.getItem('whatsapp_relay_operator_id');
-      const savedName = localStorage.getItem('whatsapp_relay_operator_name');
+      const savedId = localStorage.getItem('whatsapp_echo_operator_id');
+      const savedName = localStorage.getItem('whatsapp_echo_operator_name');
       if (savedId) operatorId = savedId;
       if (savedName) operatorName = savedName;
 
@@ -1947,7 +2022,7 @@
 
       socket.on('operator_id', ({ id }) => {
         operatorId = id;
-        localStorage.setItem('whatsapp_relay_operator_id', id);
+        localStorage.setItem('whatsapp_echo_operator_id', id);
       });
 
       socket.on('status', ({ status, connectorOperatorId: connId, connectorOperatorName: connName }) => {
@@ -2191,7 +2266,7 @@
     }
 
     // ─── Notifications ────────────────────────────────────────────────────────────
-    let notificationsMuted = localStorage.getItem('whatsapp_relay_notifications_muted') === 'true';
+    let notificationsMuted = localStorage.getItem('whatsapp_echo_notifications_muted') === 'true';
 
     function initNotifications() {
       const toggleBtn = document.getElementById('notificationToggleBtn');
@@ -2248,11 +2323,11 @@
         Notification.requestPermission().then(permission => {
           if (permission === 'granted') {
             notificationsMuted = false;
-            localStorage.setItem('whatsapp_relay_notifications_muted', 'false');
+            localStorage.setItem('whatsapp_echo_notifications_muted', 'false');
             updateNotificationButton();
             showToast('Desktop notifications enabled!', 'success');
             // Show a test notification
-            new Notification('WA Relay', {
+            new Notification('ECHO', {
               body: 'Desktop notifications successfully enabled!',
               tag: 'test-notification'
             });
@@ -2266,7 +2341,7 @@
 
       // Toggle state if already granted
       notificationsMuted = !notificationsMuted;
-      localStorage.setItem('whatsapp_relay_notifications_muted', notificationsMuted ? 'true' : 'false');
+      localStorage.setItem('whatsapp_echo_notifications_muted', notificationsMuted ? 'true' : 'false');
       updateNotificationButton();
       showToast(notificationsMuted ? 'Notifications silenced' : 'Notifications active', 'info');
     }

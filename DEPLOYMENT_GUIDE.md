@@ -1,4 +1,4 @@
-# WhatsApp Relay Bridge - Deployment Guide
+# WhatsApp ECHO Bridge - Deployment Guide
 
 ## For Master PC Setup (Tomorrow)
 
@@ -9,9 +9,9 @@
 4. Restart computer (recommended)
 
 ### Step 2: Copy Project to Master PC
-Copy entire folder to: `C:\wa_relay`
+Copy entire folder to: `C:\wa_echo`
 ```
-C:\wa_relay\
+C:\wa_echo\
   ├── START_SERVER.bat    ← Double-click to start
   ├── START_SERVER.exe    ← OR use this (after converting)
   ├── bridge.js
@@ -36,7 +36,7 @@ If you want a single .exe file:
 1. Go to: https://www.bat2exe.com/
 2. Upload `START_SERVER.bat`
 3. Download `START_SERVER.exe`
-4. Place in `C:\wa_relay\`
+4. Place in `C:\wa_echo\`
 5. Double-click the .exe
 
 **Option 2 - AutoHotkey (Free):**
@@ -102,7 +102,7 @@ http://192.168.1.100:3001
 
 ## File Structure
 ```
-C:\wa_relay\
+C:\wa_echo\
 ├── START_SERVER.bat         ← Main launcher
 ├── START_SERVER.ahk         ← Optional: convert to .exe
 ├── START_SERVER.exe         ← After conversion (optional)

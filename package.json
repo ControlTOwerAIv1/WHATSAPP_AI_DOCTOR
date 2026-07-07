@@ -1,7 +1,7 @@
 {
-  "name": "whatsapp-relay-bridge",
+  "name": "whatsapp-echo-bridge",
   "version": "2.0.0",
-  "description": "WhatsApp multi-operator relay bridge with full media support",
+  "description": "WhatsApp multi-operator ECHO bridge with full media support",
   "main": "bridge.js",
   "scripts": {
     "start": "node bridge.js",

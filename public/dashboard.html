@@ -4,9 +4,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
-  <title>WA Relay — Operator Dashboard</title>
+  <title>ECHO — Operator Dashboard</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
   <link rel="stylesheet" href="dashboard.css">
+  <link rel="icon" href="logo.png" type="image/png">
 </head>
 
 <body>
@@ -33,7 +34,7 @@
     <div class="qr-card" style="position: relative;">
       <div class="lightbox-close" style="top: 15px; right: 20px; font-size: 20px;" onclick="hideQrOverlay()">✕</div>
       <div class="qr-title">Connect WhatsApp</div>
-      <div class="qr-subtitle">Scan this QR code with your WhatsApp to link the relay bridge</div>
+      <div class="qr-subtitle">Scan this QR code with your WhatsApp to link the ECHO bridge</div>
       <div class="qr-image-wrap"><img id="qrImage" src="" alt="QR Code"></div>
       <div class="qr-steps">
         <div class="qr-step">
@@ -88,7 +89,10 @@
   <!-- Top Bar -->
   <div class="topbar">
     <div style="display:flex;align-items:center;gap:16px">
-      <div class="logo">WA<span>/</span>RELAY</div>
+      <div class="logo">
+        <img src="logo.png" alt="ECHO Logo" class="logo-img">
+        <span>ECHO</span>
+      </div>
       <div class="status-pill disconnected" id="statusPill">
         <div class="status-dot"></div>
         <span id="statusText">Offline</span>
@@ -120,11 +124,7 @@
           <div class="count-badge" id="chatCount">0</div>
         </div>
         <button class="new-chat-btn" onclick="openNewChatModal()" title="New Chat">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-            <line x1="12" y1="8" x2="12" y2="14"/>
-            <line x1="9" y1="11" x2="15" y2="11"/>
-          </svg>
+          <img src="new_chat.png" alt="New Chat" class="new-chat-icon-img">
         </button>
       </div>
       <div class="search-wrap">

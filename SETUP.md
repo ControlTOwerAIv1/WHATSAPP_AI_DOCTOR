@@ -1,7 +1,7 @@
-# WhatsApp Relay Bridge — Setup & Notes
+# WhatsApp ECHO Bridge — Setup & Notes
 
 ## What This Is
-A self-hosted WhatsApp relay bridge using [Baileys](https://github.com/WhiskeySockets/Baileys) (unofficial WhatsApp Web API). It exposes a local HTTP/WebSocket server with a dashboard UI for multiple operators to send and receive WhatsApp messages in real-time.
+A self-hosted WhatsApp ECHO bridge using [Baileys](https://github.com/WhiskeySockets/Baileys) (unofficial WhatsApp Web API). It exposes a local HTTP/WebSocket server with a dashboard UI for multiple operators to send and receive WhatsApp messages in real-time.
 
 ## Key Features (v3.0)
 - **Multi-operator support** — dozens of browser clients can connect simultaneously and see each other's presence
@@ -28,16 +28,16 @@ The bridge is managed by PM2 (process manager).
 pm2 start ecosystem.config.js
 
 # Or start directly
-pm2 start wa-relay
+pm2 start echo
 
 # Stop
-pm2 stop wa-relay
+pm2 stop echo
 
 # Restart
-pm2 restart wa-relay
+pm2 restart echo
 
 # View logs
-pm2 logs wa-relay
+pm2 logs echo
 
 # Check status
 pm2 status
@@ -48,7 +48,7 @@ The server runs on **http://localhost:3001**
 ## First-Time Setup / Re-linking
 1. Stop the bridge and clear the session:
    ```bash
-   pm2 stop wa-relay
+   pm2 stop echo
    rm -rf auth_info/* relay.sqlite store.json
    ```
 2. On your phone: **WhatsApp → Settings → Linked Devices → Unlink** any existing entry
@@ -81,7 +81,7 @@ WhatsApp's linked device protocol only provides WhatsApp display names, not phon
 3. Run the sync script:
    ```bash
    node sync_contacts.js
-   pm2 restart wa-relay
+   pm2 restart echo
    ```
    *(See sync_contacts.js for the standalone script)*
 
@@ -95,7 +95,7 @@ WhatsApp's linked device protocol only provides WhatsApp display names, not phon
 
 ### 1. Port already in use (EADDRINUSE)
 PM2 was auto-restarting the bridge, keeping port 3001 occupied.
-**Fix:** `pm2 stop wa-relay` before restarting manually.
+**Fix:** `pm2 stop echo` before restarting manually.
 
 ### 2. WhatsApp Connection Failure loop
 Baileys v6 was being rejected by WhatsApp servers. PM2 kept restarting causing IP rate-limiting.

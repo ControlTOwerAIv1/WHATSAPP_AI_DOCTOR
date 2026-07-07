@@ -1,5 +1,5 @@
 /**
- * WhatsApp Relay Bridge - Full Media Support
+ * ECHO WhatsApp Bridge - Full Media Support
  * Supports: text, images, video, audio, documents, stickers, location
  *
  * Install:
@@ -102,7 +102,7 @@ process.on('unhandledRejection', (reason, promise) => {
 try {
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log('\n========================================');
-    console.log('   WhatsApp Relay Bridge - Running');
+    console.log('   ECHO WhatsApp Bridge - Running');
     console.log('========================================\n');
     console.log('Server started successfully!');
     console.log(`\nAccess URL: http://localhost:${PORT}`);
