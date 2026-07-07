@@ -800,6 +800,27 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       console.log(`[Bridge] open_chat event received for JID: ${jid}`);
       socket.activeJid = jid;
       whatsapp.markChatAsRead(jid);
+
+      // Reset unread count for the chat (including its alternate LID/phone JID)
+      const preferredJid = stores.getPreferredJid(jid) || jid;
+      const targetJids = [preferredJid];
+      const mappedAltJid = preferredJid.endsWith('@lid') ? stores.lidToJid[preferredJid] : stores.jidToLid[preferredJid];
+      if (mappedAltJid) targetJids.push(mappedAltJid);
+
+      let chatUpdated = false;
+      for (const tJid of targetJids) {
+        const chat = stores.chatStore[tJid];
+        if (chat && chat.unreadCount > 0) {
+          chat.unreadCount = 0;
+          database.upsertChat(chat);
+          chatUpdated = true;
+        }
+      }
+      if (chatUpdated) {
+        stores.broadcastChats();
+        stores.saveStore();
+      }
+
       if (jid.endsWith('@lid') && !stores.lidToJid[jid]) {
         stores.resolveLidToPhoneAsync(jid).then((pn) => {
           if (pn) {

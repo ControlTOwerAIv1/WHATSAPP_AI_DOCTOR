@@ -530,13 +530,16 @@ async function connectToWhatsApp() {
             id: parsed.jid,
             name: resolved || stores.chatDisplayName(parsed.jid),
             type: stores.getChatType(parsed.jid),
-            unreadCount: 0,
+            unreadCount: (parsed.fromMe || isChatActive(parsed.jid)) ? 0 : 1,
             timestamp: parsed.timestamp,
             lastMsg: parsed.content,
           });
         } else {
           chatStore[parsed.jid].lastMsg = parsed.content;
           chatStore[parsed.jid].timestamp = parsed.timestamp;
+          if (!parsed.fromMe && !isChatActive(parsed.jid)) {
+            chatStore[parsed.jid].unreadCount = (chatStore[parsed.jid].unreadCount || 0) + 1;
+          }
           const resolved = stores.resolveContactName(parsed.jid);
           if (resolved) {
             chatStore[parsed.jid].name = resolved;
@@ -548,6 +551,7 @@ async function connectToWhatsApp() {
             }
           }
         }
+        database.upsertChat(chatStore[parsed.jid]);
         stores.broadcastChats();
         stores.saveStore();
       }

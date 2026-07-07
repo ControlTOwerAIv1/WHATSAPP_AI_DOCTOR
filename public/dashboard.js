@@ -92,6 +92,15 @@
       setTimeout(() => t.remove(), 3000);
     }
 
+    function updateDocumentTitle() {
+      const totalUnread = allChats.reduce((sum, chat) => sum + (chat.unreadCount || 0), 0);
+      if (totalUnread > 0) {
+        document.title = `(${totalUnread}) ECHO — Operator Dashboard`;
+      } else {
+        document.title = 'ECHO — Operator Dashboard';
+      }
+    }
+
     function normalizeBridgeUrl(input) {
       const raw = String(input || '').trim();
       if (!raw) return null;
@@ -437,6 +446,7 @@
 
     function renderChatList(chats) {
       allChats = chats || [];
+      updateDocumentTitle();
       const list = document.getElementById('chatList');
       list.innerHTML = '';
 
@@ -507,7 +517,7 @@
         </div>
         <div class="chat-preview">${chat.lastMsg || chat.preview || ''}</div>
       </div>
-      ${chat.unread || chat.unreadCount ? '<div class="unread-dot"></div>' : ''}
+      ${chat.unreadCount ? `<div class="unread-badge">${chat.unreadCount}</div>` : ''}
     `;
         list.appendChild(item);
       });

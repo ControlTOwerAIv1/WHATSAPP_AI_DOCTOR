@@ -949,6 +949,14 @@ function updateChatPreview(jid, lastMsg, timestamp) {
   }
   chat.lastMsg = lastMsg || '';
   chat.timestamp = toTimestamp(timestamp);
+  chat.unreadCount = 0;
+
+  // Also clear unread count for alternate LID/JID mapping if it exists
+  const altJid = jid.endsWith('@lid') ? lidToJid[jid] : jidToLid[jid];
+  if (altJid && chatStore[altJid]) {
+    chatStore[altJid].unreadCount = 0;
+  }
+
   return chat;
 }
 
