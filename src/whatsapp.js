@@ -377,7 +377,7 @@ async function disconnectWhatsApp() {
     connectionStatus = 'disconnected';
     qrCodeData = null;
     const { id: connectorOperatorId, name: connectorOperatorName } = stores.getConnectorOperator();
-    io.emit('status', { status: 'disconnected', connectorOperatorId, connectorOperatorName });
+    io.emit('status', { status: 'disconnected', connectorOperatorId, connectorOperatorName, myJid: sock?.user?.id || null });
     io.emit('qr', null);
     io.emit('chats', []);
     io.emit('groups', []);
@@ -432,7 +432,7 @@ async function connectToWhatsApp() {
         const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
         connectionStatus = 'disconnected';
         const { id: connectorOperatorId, name: connectorOperatorName } = stores.getConnectorOperator();
-        io.emit('status', { status: 'disconnected', reason, connectorOperatorId, connectorOperatorName });
+        io.emit('status', { status: 'disconnected', reason, connectorOperatorId, connectorOperatorName, myJid: sock?.user?.id || null });
         if (reason === DisconnectReason.loggedOut) {
           console.log('[Bridge] Connection closed due to logout. Cleaning up session...');
           await disconnectWhatsApp();
@@ -468,7 +468,7 @@ async function connectToWhatsApp() {
         }
 
         const { id: connectorOperatorId, name: connectorOperatorName } = stores.getConnectorOperator();
-        io.emit('status', { status: 'connected', connectorOperatorId, connectorOperatorName });
+        io.emit('status', { status: 'connected', connectorOperatorId, connectorOperatorName, myJid: sock?.user?.id || null });
         console.log('[Bridge] Connected to WhatsApp!');
         await loadGroups();
         stores.backfillContactNames();
@@ -590,6 +590,42 @@ async function connectToWhatsApp() {
           }
         }
         io.emit('group_update', update);
+      }
+    });
+
+    sock.ev.on('group-participants.update', async ({ id, participants, action }) => {
+      try {
+        const meta = await sock.groupMetadata(id);
+        groupStore[id] = meta;
+        io.emit('groups', Object.values(groupStore));
+        stores.broadcastChats();
+      } catch (e) {
+        console.error('[Bridge] Failed to fetch group metadata on update:', e);
+        const meta = groupStore[id];
+        if (meta) {
+          if (!meta.participants) meta.participants = [];
+          if (action === 'add') {
+            for (const p of participants) {
+              if (!meta.participants.some(x => x.id === p)) {
+                meta.participants.push({ id: p, admin: null });
+              }
+            }
+          } else if (action === 'remove') {
+            meta.participants = meta.participants.filter(p => !participants.includes(p.id));
+          } else if (action === 'promote') {
+            for (const p of participants) {
+              const found = meta.participants.find(x => x.id === p);
+              if (found) found.admin = 'admin';
+            }
+          } else if (action === 'demote') {
+            for (const p of participants) {
+              const found = meta.participants.find(x => x.id === p);
+              if (found) found.admin = null;
+            }
+          }
+          io.emit('groups', Object.values(groupStore));
+          stores.broadcastChats();
+        }
       }
     });
 

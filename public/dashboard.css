@@ -2603,4 +2603,113 @@
       line-height: 1.4;
     }
 
+    /* Group Details Modal Custom Additions */
+    .group-details-participant {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-radius: 8px;
+      background: var(--surface);
+      margin-bottom: 6px;
+      border: 1px solid transparent;
+      transition: all 0.2s ease;
+    }
+
+    .group-details-participant:hover {
+      border-color: var(--border);
+      background: var(--surface2);
+    }
+
+    .participant-info {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .participant-avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: var(--surface2);
+      color: var(--accent2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      font-size: 14px;
+      flex-shrink: 0;
+      border: 1px solid var(--border);
+    }
+
+    .participant-name-container {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .participant-display-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .participant-phone {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .participant-badge-container {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .admin-badge {
+      font-size: 10px;
+      font-weight: bold;
+      color: var(--accent);
+      background: rgba(0, 229, 160, 0.1);
+      border: 1px solid rgba(0, 229, 160, 0.3);
+      padding: 2px 6px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .participant-actions {
+      display: flex;
+      gap: 6px;
+      margin-left: 8px;
+    }
+
+    .btn-action-small {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-size: 11px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.15s ease;
+    }
+
+    .btn-action-small:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(0, 229, 160, 0.05);
+    }
+
+    .btn-action-small.remove-btn:hover {
+      border-color: var(--danger);
+      color: var(--danger);
+      background: rgba(239, 68, 68, 0.05);
+    }
+
 

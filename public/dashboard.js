@@ -2,6 +2,7 @@
     let socket = null;
     let bridgeUrl = 'http://localhost:3001';
     let activeChat = null;         // { id, name, type, ... }
+    let myJid = null;
     let currentTab = 'operators';
     let operatorId = localStorage.getItem('whatsapp_echo_operator_id') || '';
     let operatorName = localStorage.getItem('whatsapp_echo_operator_name') || '';
@@ -258,9 +259,13 @@
       }
       if (searchBtn) searchBtn.style.display = 'inline-flex';
 
-      let meta = (activeChat.type === 'group' || activeChat.type === 'community')
-        ? `${activeChat.participants || '?'} participants`
-        : cleanJid(activeChat.phone || activeChat.id || '');
+      let meta = '';
+      if (activeChat.type === 'group' || activeChat.type === 'community') {
+        const count = Array.isArray(activeChat.participants) ? activeChat.participants.length : (Number(activeChat.participants) || '?');
+        meta = `${count} participants`;
+      } else {
+        meta = cleanJid(activeChat.phone || activeChat.id || '');
+      }
       let topDisplayName = cleanJid(activeChat.verifiedName || activeChat.name || activeChat.id);
 
       if (activeChat.type === 'personal') {
@@ -297,6 +302,19 @@
       topAvatarEl.className = 'chat-topbar-avatar ' + avatarType;
       document.getElementById('chatTopName').innerHTML = `<span style="display:inline-flex;align-items:center;">${topDisplayName}${verifiedBadge}</span>`;
       document.getElementById('chatTopMeta').textContent = meta;
+
+      // Make the topbar clickable for groups
+      const isGroup = activeChat.type === 'group' || activeChat.type === 'community' || activeChat.id.endsWith('@g.us');
+      const infoEl = document.querySelector('.chat-topbar-info');
+      if (infoEl) {
+        if (isGroup) {
+          infoEl.style.cursor = 'pointer';
+          infoEl.onclick = openGroupDetailsModal;
+        } else {
+          infoEl.style.cursor = 'default';
+          infoEl.onclick = null;
+        }
+      }
 
       assignmentPill.textContent = assignmentText(activeChat);
       assignmentPill.className = 'assignment-pill';
@@ -2035,8 +2053,9 @@
         localStorage.setItem('whatsapp_echo_operator_id', id);
       });
 
-      socket.on('status', ({ status, connectorOperatorId: connId, connectorOperatorName: connName }) => {
+      socket.on('status', ({ status, connectorOperatorId: connId, connectorOperatorName: connName, myJid: ownJid }) => {
         connectionStatus = status;
+        if (ownJid !== undefined) myJid = ownJid;
         if (connId !== undefined) connectorOperatorId = connId;
         if (connName !== undefined) connectorOperatorName = connName;
         if (status === 'connected') {
@@ -2468,8 +2487,354 @@
       openChat(chat, null);
     }
 
+    // ─── Group Details Modal Logic ──────────────────────────────────────────────
+    async function openGroupDetailsModal(e) {
+      if (e && e.target.closest('.mobile-back-btn')) return;
+      if (!activeChat) return;
+      
+      const overlay = document.getElementById('groupDetailsOverlay');
+      if (!overlay) return;
+      
+      overlay.classList.remove('hidden');
+      renderGroupDetails(activeChat);
+      
+      try {
+        const res = await fetch(`${bridgeUrl}/api/groups/${encodeURIComponent(activeChat.id)}`);
+        if (res.ok) {
+          const latestGroup = await res.json();
+          const chatIdx = allChats.findIndex(c => c.id === activeChat.id);
+          if (chatIdx >= 0) {
+            allChats[chatIdx].participants = latestGroup.participants || [];
+            allChats[chatIdx].name = latestGroup.subject;
+            activeChat = allChats[chatIdx];
+          } else {
+            activeChat.participants = latestGroup.participants || [];
+            activeChat.name = latestGroup.subject;
+          }
+          renderChatHeader();
+          renderGroupDetails(activeChat);
+        }
+      } catch (err) {
+        console.error('Error fetching group details:', err);
+      }
+    }
+
+    function closeGroupDetailsModal() {
+      const overlay = document.getElementById('groupDetailsOverlay');
+      if (overlay) overlay.classList.add('hidden');
+    }
+
+    function openChatWithJid(jid) {
+      if (!jid) return;
+      if (myJid && cleanJid(jid).replace(/[^0-9]/g, '') === cleanJid(myJid).replace(/[^0-9]/g, '')) return; // Don't message yourself
+      
+      closeGroupDetailsModal();
+      
+      let chat = allChats.find(c => c.id === jid);
+      if (!chat) {
+        const contact = allContacts.find(c => c.id === jid);
+        const name = contact ? contact.name : getParticipantDisplayName(jid);
+        const phone = jid.split('@')[0];
+        chat = {
+          id: jid,
+          name: name,
+          type: 'personal',
+          phone: phone,
+          unreadCount: 0,
+          timestamp: Date.now() / 1000,
+          lastMsg: ''
+        };
+        allChats.unshift(chat);
+        renderChatList(allChats);
+      }
+      
+      switchSidebarTab('chats');
+      openChat(chat, null);
+    }
+
+    function getParticipantDisplayName(jid) {
+      if (jid.endsWith('@s.whatsapp.net')) {
+        const phone = jid.split('@')[0];
+        const contact = allContacts.find(c => c.id === jid || c.phone === phone);
+        if (contact && contact.name) return contact.name;
+        return '+' + phone;
+      }
+      return cleanJid(jid);
+    }
+
+    function renderGroupDetails(chat) {
+      if (!chat) return;
+      
+      const subjectInput = document.getElementById('groupSubjectInput');
+      subjectInput.value = chat.name || 'Group Chat';
+      subjectInput.readOnly = true;
+      subjectInput.style.borderBottomColor = 'transparent';
+      
+      const avatarEl = document.getElementById('groupDetailsAvatar');
+      const initial = (chat.name || '?')[0].toUpperCase();
+      avatarEl.textContent = initial;
+      
+      const metaEl = document.getElementById('groupDetailsMeta');
+      metaEl.textContent = chat.id;
+      
+      const participants = chat.participants || [];
+      document.getElementById('groupParticipantCount').textContent = participants.length;
+      
+      const myJidClean = myJid ? cleanJid(myJid).replace(/[^0-9]/g, '') : '';
+      const botParticipant = participants.find(p => {
+        const pClean = cleanJid(p.id).replace(/[^0-9]/g, '');
+        return pClean === myJidClean;
+      });
+      const isBotAdmin = botParticipant && (botParticipant.admin === 'admin' || botParticipant.admin === 'superadmin');
+      
+      const adminSection = document.getElementById('groupAddParticipantSection');
+      const editBtn = document.getElementById('editGroupSubjectBtn');
+      if (isBotAdmin) {
+        adminSection.style.display = 'block';
+        editBtn.style.display = 'inline-flex';
+      } else {
+        adminSection.style.display = 'none';
+        editBtn.style.display = 'none';
+      }
+      
+      const listEl = document.getElementById('groupParticipantsList');
+      listEl.innerHTML = '';
+      
+      if (participants.length === 0) {
+        listEl.innerHTML = '<div style="padding:12px;text-align:center;color:var(--muted);font-size:12px">No participants found</div>';
+        return;
+      }
+      
+      participants.forEach(p => {
+        const item = document.createElement('div');
+        item.className = 'group-details-participant';
+        
+        const isUserAdmin = p.admin === 'admin' || p.admin === 'superadmin';
+        const isSelf = myJidClean && (cleanJid(p.id).replace(/[^0-9]/g, '') === myJidClean);
+        const displayName = isSelf ? 'You (System)' : getParticipantDisplayName(p.id);
+        const phoneDisplay = cleanJid(p.id);
+        const pInitial = displayName[0].toUpperCase();
+        
+        let badgesHtml = '';
+        if (isUserAdmin) {
+          badgesHtml += '<span class="admin-badge">Group admin</span>';
+        }
+        
+        let actionsHtml = '';
+        if (isBotAdmin && !isSelf) {
+          const actionText = isUserAdmin ? 'Dismiss Admin' : 'Make Admin';
+          const actionType = isUserAdmin ? 'demote' : 'promote';
+          actionsHtml = `
+            <div class="participant-actions">
+              <button class="btn-action-small" onclick="updateParticipantRole('${actionType}', '${p.id}')">${actionText}</button>
+              <button class="btn-action-small remove-btn" onclick="removeParticipant('${p.id}')">Remove</button>
+            </div>
+          `;
+        }
+        
+        const isLid = p.id && p.id.endsWith('@lid');
+        item.innerHTML = `
+          <div class="participant-info" onclick="openChatWithJid('${p.id}')" style="cursor: pointer;">
+            <div class="participant-avatar">${pInitial}</div>
+            <div class="participant-name-container">
+              <div class="participant-display-name">${displayName}</div>
+              ${(isLid || displayName === phoneDisplay) ? '' : `<div class="participant-phone">${phoneDisplay}</div>`}
+            </div>
+          </div>
+          <div class="participant-badge-container">
+            ${badgesHtml}
+            ${actionsHtml}
+          </div>
+        `;
+        listEl.appendChild(item);
+      });
+    }
+
+    let isEditingGroupSubject = false;
+    function toggleEditGroupSubject() {
+      const input = document.getElementById('groupSubjectInput');
+      const btn = document.getElementById('editGroupSubjectBtn');
+      if (!isEditingGroupSubject) {
+        isEditingGroupSubject = true;
+        input.readOnly = false;
+        input.style.borderBottomColor = 'var(--accent)';
+        input.focus();
+        btn.textContent = '💾';
+      } else {
+        saveGroupSubject();
+      }
+    }
+
+    async function saveGroupSubject() {
+      if (!activeChat) return;
+      const input = document.getElementById('groupSubjectInput');
+      const btn = document.getElementById('editGroupSubjectBtn');
+      const newSubject = input.value.trim();
+      if (!newSubject) {
+        showToast('Group name cannot be empty', 'error');
+        return;
+      }
+      
+      try {
+        const res = await fetch(`${bridgeUrl}/api/groups/${encodeURIComponent(activeChat.id)}/update`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subject: newSubject })
+        });
+        
+        if (res.ok) {
+          showToast('Group name updated successfully', 'success');
+          const chatIdx = allChats.findIndex(c => c.id === activeChat.id);
+          if (chatIdx >= 0) {
+            allChats[chatIdx].name = newSubject;
+            activeChat = allChats[chatIdx];
+          } else {
+            activeChat.name = newSubject;
+          }
+          renderChatHeader();
+        } else {
+          const data = await res.json();
+          showToast(data.error || 'Failed to update group name', 'error');
+        }
+      } catch (err) {
+        showToast('Error updating group name', 'error');
+        console.error(err);
+      } finally {
+        isEditingGroupSubject = false;
+        input.readOnly = true;
+        input.style.borderBottomColor = 'transparent';
+        btn.textContent = '✏️';
+      }
+    }
+
+    async function addGroupParticipant() {
+      if (!activeChat) return;
+      const input = document.getElementById('addGroupParticipantPhone');
+      const phoneRaw = input.value.trim().replace(/[^0-9]/g, '');
+      if (!phoneRaw) {
+        showToast('Please enter a valid phone number', 'error');
+        return;
+      }
+      const participantJid = `${phoneRaw}@s.whatsapp.net`;
+      
+      try {
+        showToast('Adding participant...', 'info');
+        const res = await fetch(`${bridgeUrl}/api/groups/${encodeURIComponent(activeChat.id)}/participants`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'add', participants: [participantJid] })
+        });
+        
+        if (res.ok) {
+          showToast('Participant added successfully', 'success');
+          input.value = '';
+          openGroupDetailsModal();
+        } else {
+          const data = await res.json();
+          showToast(data.error || 'Failed to add participant', 'error');
+        }
+      } catch (err) {
+        showToast('Error adding participant', 'error');
+        console.error(err);
+      }
+    }
+
+    async function removeParticipant(participantJid) {
+      if (!activeChat) return;
+      if (!confirm('Are you sure you want to remove this participant?')) return;
+      
+      try {
+        showToast('Removing participant...', 'info');
+        const res = await fetch(`${bridgeUrl}/api/groups/${encodeURIComponent(activeChat.id)}/participants`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'remove', participants: [participantJid] })
+        });
+        
+        if (res.ok) {
+          showToast('Participant removed successfully', 'success');
+          openGroupDetailsModal();
+        } else {
+          const data = await res.json();
+          showToast(data.error || 'Failed to remove participant', 'error');
+        }
+      } catch (err) {
+        showToast('Error removing participant', 'error');
+        console.error(err);
+      }
+    }
+
+    async function updateParticipantRole(action, participantJid) {
+      if (!activeChat) return;
+      
+      try {
+        showToast('Updating role...', 'info');
+        const res = await fetch(`${bridgeUrl}/api/groups/${encodeURIComponent(activeChat.id)}/participants`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, participants: [participantJid] })
+        });
+        
+        if (res.ok) {
+          showToast('Participant role updated', 'success');
+          openGroupDetailsModal();
+        } else {
+          const data = await res.json();
+          showToast(data.error || 'Failed to update role', 'error');
+        }
+      } catch (err) {
+        showToast('Error updating role', 'error');
+        console.error(err);
+      }
+    }
+
+    async function leaveGroup() {
+      if (!activeChat) return;
+      if (!confirm('Are you sure you want to leave this group? This action cannot be undone.')) return;
+      
+      try {
+        showToast('Leaving group...', 'info');
+        const res = await fetch(`${bridgeUrl}/api/groups/${encodeURIComponent(activeChat.id)}/leave`, {
+          method: 'POST'
+        });
+        
+        if (res.ok) {
+          showToast('Left the group successfully', 'success');
+          closeGroupDetailsModal();
+          activeChat = null;
+          document.getElementById('chatView').style.display = 'none';
+          document.getElementById('emptyState').style.display = 'flex';
+        } else {
+          const data = await res.json();
+          showToast(data.error || 'Failed to leave group', 'error');
+        }
+      } catch (err) {
+        showToast('Error leaving group', 'error');
+        console.error(err);
+      }
+    }
+
+    // Attach event listener for enter key in group name input
+    setTimeout(() => {
+      const groupSubjInput = document.getElementById('groupSubjectInput');
+      if (groupSubjInput) {
+        groupSubjInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') saveGroupSubject();
+        });
+      }
+    }, 500);
+
     // Expose toggle globally for HTML onclick handler
     window.toggleNotifications = toggleNotifications;
+    window.openGroupDetailsModal = openGroupDetailsModal;
+    window.openChatWithJid = openChatWithJid;
+    window.closeGroupDetailsModal = closeGroupDetailsModal;
+    window.toggleEditGroupSubject = toggleEditGroupSubject;
+    window.saveGroupSubject = saveGroupSubject;
+    window.addGroupParticipant = addGroupParticipant;
+    window.removeParticipant = removeParticipant;
+    window.updateParticipantRole = updateParticipantRole;
+    window.leaveGroup = leaveGroup;
     // Expose reply functions globally (called from dynamically built HTML onclick attributes)
     window.startReply = startReply;
     window.cancelReply = cancelReply;

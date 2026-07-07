@@ -86,6 +86,54 @@
     </div>
   </div>
 
+  <!-- Group Details Overlay -->
+  <div class="new-chat-overlay hidden" id="groupDetailsOverlay">
+    <div class="new-chat-box" style="max-width: 480px;">
+      <div class="new-chat-header">
+        <div class="new-chat-title" id="groupDetailsTitle">Group Info</div>
+        <button class="new-chat-close" onclick="closeGroupDetailsModal()">✕</button>
+      </div>
+      
+      <div class="group-details-body" style="padding: 16px; display: flex; flex-direction: column; gap: 16px; max-height: calc(100vh - 200px); overflow-y: auto;">
+        <!-- Group info header -->
+        <div style="display: flex; align-items: center; gap: 16px;">
+          <div class="chat-topbar-avatar group" id="groupDetailsAvatar" style="width: 60px; height: 60px; font-size: 24px; display: flex; align-items: center; justify-content: center; background: var(--surface2); border-radius: 50%; color: var(--accent);">G</div>
+          <div style="flex: 1;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <input type="text" id="groupSubjectInput" class="form-input" style="font-size: 18px; font-weight: bold; flex: 1; border: none; border-bottom: 2px solid transparent; background: transparent; padding: 4px 0; color: var(--text); outline: none;" readonly>
+              <button class="btn btn-ghost" id="editGroupSubjectBtn" onclick="toggleEditGroupSubject()" style="padding: 4px 8px; display: none;">✏️</button>
+            </div>
+            <div id="groupDetailsMeta" style="font-size: 12px; color: var(--muted); margin-top: 4px;"></div>
+          </div>
+        </div>
+        
+        <!-- Add Participant section -->
+        <div class="group-admin-only" id="groupAddParticipantSection" style="border-top: 1px solid var(--border); padding-top: 16px; display: none;">
+          <div style="font-weight: 600; margin-bottom: 8px; font-size: 13px; color: var(--text);">Add Participant</div>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="addGroupParticipantPhone" class="phone-number-input" style="flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; color: var(--text);" placeholder="Phone (e.g. 919876543210)">
+            <button class="btn btn-primary" onclick="addGroupParticipant()">Add</button>
+          </div>
+        </div>
+        
+        <!-- Participants list -->
+        <div style="border-top: 1px solid var(--border); padding-top: 16px; display: flex; flex-direction: column; gap: 8px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="font-weight: 600; font-size: 13px; color: var(--text);">Participants (<span id="groupParticipantCount">0</span>)</div>
+          </div>
+          <div class="new-chat-contacts-list" id="groupParticipantsList" style="max-height: 240px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 6px;">
+            <!-- Rendered dynamically -->
+          </div>
+        </div>
+
+        <!-- Leave Group action -->
+        <div style="border-top: 1px solid var(--border); padding-top: 16px; display: flex; justify-content: flex-end;">
+          <button class="btn" onclick="leaveGroup()" style="background-color: var(--danger); color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer;">Leave Group</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Top Bar -->
   <div class="topbar">
     <div style="display:flex;align-items:center;gap:16px">

@@ -743,6 +743,108 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     }
   });
 
+  app.get('/api/groups/:jid', async (req, res) => {
+    const sock = whatsapp.getSock();
+    if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
+    const { jid } = req.params;
+    try {
+      let group = stores.groupStore[jid];
+      if (!group) {
+        group = await sock.groupMetadata(jid);
+        stores.groupStore[jid] = group;
+      }
+      if (group && group.participants) {
+        const resolvedParticipants = await Promise.all(
+          group.participants.map(async (p) => {
+            let resolvedId = p.id;
+            if (p.id && p.id.endsWith('@lid')) {
+              let phoneJid = stores.lidToJid[p.id];
+              if (!phoneJid) {
+                phoneJid = await stores.resolveLidToPhoneAsync(p.id);
+              }
+              if (phoneJid) {
+                resolvedId = phoneJid;
+              }
+            }
+            return {
+              ...p,
+              id: resolvedId
+            };
+          })
+        );
+        group = {
+          ...group,
+          participants: resolvedParticipants
+        };
+      }
+      res.json(group);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/groups/:jid/participants', async (req, res) => {
+    const sock = whatsapp.getSock();
+    if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
+    const { jid } = req.params;
+    const { action, participants } = req.body;
+    if (!action || !participants || !Array.isArray(participants)) {
+      return res.status(400).json({ error: 'Missing action or participants array' });
+    }
+    try {
+      const response = await sock.groupParticipantsUpdate(jid, participants, action);
+      const meta = await sock.groupMetadata(jid);
+      stores.groupStore[jid] = meta;
+      if (stores.chatStore[jid]) {
+        stores.chatStore[jid].name = meta.subject;
+        database.upsertChat(stores.chatStore[jid]);
+      }
+      io.emit('groups', Object.values(stores.groupStore));
+      stores.broadcastChats();
+      res.json({ success: true, response });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/groups/:jid/update', async (req, res) => {
+    const sock = whatsapp.getSock();
+    if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
+    const { jid } = req.params;
+    const { subject } = req.body;
+    try {
+      if (subject) {
+        await sock.groupUpdateSubject(jid, subject);
+      }
+      const meta = await sock.groupMetadata(jid);
+      stores.groupStore[jid] = meta;
+      if (stores.chatStore[jid]) {
+        stores.chatStore[jid].name = meta.subject;
+        database.upsertChat(stores.chatStore[jid]);
+      }
+      io.emit('groups', Object.values(stores.groupStore));
+      stores.broadcastChats();
+      res.json({ success: true, meta });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/groups/:jid/leave', async (req, res) => {
+    const sock = whatsapp.getSock();
+    if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
+    const { jid } = req.params;
+    try {
+      await sock.groupLeave(jid);
+      delete stores.groupStore[jid];
+      io.emit('groups', Object.values(stores.groupStore));
+      stores.broadcastChats();
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // WebSocket (operator dashboard <-> server)
   io.on('connection', (socket) => {
     console.log(`[Bridge] Operator connected: ${socket.id}`);
@@ -762,7 +864,8 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     socket.emit('operator_id', { id: opId });
 
     const { id: connectorOperatorId, name: connectorOperatorName } = stores.getConnectorOperator();
-    socket.emit('status', { status: whatsapp.getStatus(), connectorOperatorId, connectorOperatorName });
+    const sock = whatsapp.getSock();
+    socket.emit('status', { status: whatsapp.getStatus(), connectorOperatorId, connectorOperatorName, myJid: sock?.user?.id || null });
     if (whatsapp.getQrCodeData()) socket.emit('qr', whatsapp.getQrCodeData());
     socket.emit('groups', Object.values(stores.groupStore));
     socket.emit('chats', stores.sortedChats());

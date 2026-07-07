@@ -295,6 +295,26 @@ function normalizeChat(chat = {}) {
     currentName = chatDisplayName(id);
   }
 
+  const isGroup = chat.type === 'group' || chat.type === 'community' || (id && id.endsWith('@g.us'));
+  let participants = chat.participants || [];
+  if (isGroup && id && groupStore[id]) {
+    participants = (groupStore[id].participants || []).map(p => {
+      let resolvedId = p.id;
+      if (p.id && p.id.endsWith('@lid')) {
+        const phoneJid = lidToJid[p.id];
+        if (phoneJid) {
+          resolvedId = phoneJid;
+        } else {
+          resolveLidToPhoneAsync(p.id);
+        }
+      }
+      return {
+        ...p,
+        id: resolvedId
+      };
+    });
+  }
+
   return {
     ...chat,
     phone: phone || chat.phone || null,
@@ -306,6 +326,7 @@ function normalizeChat(chat = {}) {
     assignedOperatorId: chat.assignedOperatorId || null,
     assignedOperatorName: chat.assignedOperatorName || null,
     assignedAt: chat.assignedAt || null,
+    participants: participants,
   };
 }
 
