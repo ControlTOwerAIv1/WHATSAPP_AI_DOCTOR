@@ -2518,3 +2518,68 @@
         document.querySelectorAll('.msg-bubble').forEach(b => b.classList.remove('show-actions'));
       }
     });
+
+    // --- Added for Bug 21: Paste images into message input ---
+    const msgInput = document.getElementById('messageInput');
+    if (msgInput) {
+      msgInput.addEventListener('paste', (e) => {
+        let hasImage = false;
+        let imageFiles = [];
+
+        // Check files first (more reliable for actual files like snipping tool)
+        if (e.clipboardData && e.clipboardData.files && e.clipboardData.files.length > 0) {
+          for (let i = 0; i < e.clipboardData.files.length; i++) {
+            if (e.clipboardData.files[i].type.startsWith('image/')) {
+              imageFiles.push(e.clipboardData.files[i]);
+              hasImage = true;
+            }
+          }
+        } 
+        
+        // Fallback to items if files didn't have images
+        if (!hasImage && e.clipboardData && e.clipboardData.items) {
+          const items = e.clipboardData.items;
+          for (let i = 0; i < items.length; i++) {
+            if (items[i].type.startsWith('image/')) {
+              const file = items[i].getAsFile();
+              if (file) {
+                imageFiles.push(file);
+                hasImage = true;
+              }
+            }
+          }
+        }
+        
+        if (!hasImage) return; // Let normal pasting happen
+        
+        e.preventDefault();
+        
+        for (let i = 0; i < imageFiles.length; i++) {
+          let file = imageFiles[i];
+          if (!file.name || file.name === 'image.png' || file.name === 'blob' || file.name.startsWith('image')) {
+            const ext = file.type.split('/')[1] || 'png';
+            const newName = `screenshot-${Date.now()}-${i}.${ext}`;
+            try {
+              file = new File([file], newName, { type: file.type });
+            } catch (err) {
+              console.error("Error creating new File:", err);
+            }
+          }
+          
+          if (pendingMediaList.length + 1 > 100) {
+            showToast('Maximum 100 attachments allowed at a time', 'error');
+            break;
+          }
+          
+          const previewUrl = URL.createObjectURL(file);
+          pendingMediaList.push({
+            id: genTempId(),
+            file: file,
+            type: 'image',
+            previewUrl: previewUrl
+          });
+        }
+        
+        renderMediaPreview();
+      });
+    }
