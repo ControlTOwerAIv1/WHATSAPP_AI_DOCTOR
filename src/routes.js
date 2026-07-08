@@ -845,6 +845,161 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     }
   });
 
+  app.post('/api/messages/:jid/:id/download-media', async (req, res) => {
+    const sock = whatsapp.getSock();
+    if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
+
+    const { jid, id } = req.params;
+    let msg = stores.findMessageInThread(jid, id);
+    if (!msg) {
+      const row = database.db.prepare('SELECT payload FROM messages WHERE id = ?').get(id);
+      if (row) {
+        msg = stores.normalizeMessageRecord(JSON.parse(row.payload));
+      }
+    }
+
+    if (!msg) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+
+    if (msg.mediaUrl && msg.mediaUrl !== 'null') {
+      return res.json({
+        success: true,
+        mediaUrl: msg.mediaUrl,
+        fileName: msg.fileName,
+        content: msg.content,
+      });
+    }
+
+    if (!msg.raw) {
+      return res.status(400).json({ error: 'Original message data not available in database' });
+    }
+
+    let refreshFailed = false;
+    try {
+      const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+
+      // Helper to recursively restore Buffers from JSON serialization
+      const restoreBuffers = (obj) => {
+        if (!obj || typeof obj !== 'object') return obj;
+        if (obj.type === 'Buffer' && Array.isArray(obj.data)) {
+          return Buffer.from(obj.data);
+        }
+        for (const key in obj) {
+          if (Object.prototype.hasOwnProperty.call(obj, key)) {
+            obj[key] = restoreBuffers(obj[key]);
+          }
+        }
+        return obj;
+      };
+
+      const restoredRaw = restoreBuffers(JSON.parse(JSON.stringify(msg.raw)));
+
+      const sock = whatsapp.getSock();
+
+      // Step 1: Refresh the media URL via WhatsApp servers.
+      // Old messages have expired CDN URLs (oe= timestamp). updateMediaMessage
+      // asks WA to issue a fresh download URL before we attempt to fetch it.
+      let rawToDownload = restoredRaw;
+      if (sock && typeof sock.updateMediaMessage === 'function') {
+        try {
+          console.log(`[Bridge] Refreshing expired media URL for message ${id}...`);
+          rawToDownload = await sock.updateMediaMessage(restoredRaw);
+          console.log(`[Bridge] Media URL refreshed successfully for ${id}`);
+        } catch (refreshErr) {
+          console.warn(`[Bridge] updateMediaMessage failed for ${id}, trying original URL:`, refreshErr.message);
+          rawToDownload = restoredRaw; // fall back to original
+          refreshFailed = true;
+        }
+      }
+
+      const buffer = await downloadMediaMessage(
+        rawToDownload,
+        'buffer',
+        { reuploadRequest: sock ? sock.updateMediaMessage : undefined }
+      );
+      
+      let ext = 'bin';
+      if (msg.mimetype) {
+        ext = mime.extension(msg.mimetype) || 'bin';
+      } else {
+        const mediaTypeToExt = {
+          image: 'jpg',
+          video: 'mp4',
+          audio: 'ogg',
+          voice: 'ogg',
+          sticker: 'webp',
+        };
+        ext = mediaTypeToExt[msg.mediaType] || 'bin';
+      }
+
+      let filename;
+      if (msg.mediaType === 'document') {
+        const safeName = (msg.fileName || 'document').replace(/[^a-zA-Z0-9._-]/g, '_');
+        filename = `${Date.now()}-${safeName}`;
+      } else {
+        filename = `${Date.now()}.${ext}`;
+      }
+
+      fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
+      const mediaUrl = `/media/${filename}`;
+
+      // Update message in DB
+      const row = database.db.prepare('SELECT payload FROM messages WHERE id = ?').get(id);
+      if (row) {
+        const dbPayload = JSON.parse(row.payload);
+        dbPayload.mediaUrl = mediaUrl;
+        database.upsertMessage(dbPayload);
+      }
+
+      // Update in stores.messageStore if it exists
+      const threadJids = stores.getThreadJids(jid);
+      for (const threadJid of threadJids) {
+        const msgs = stores.messageStore[threadJid];
+        if (msgs) {
+          const found = msgs.find((m) => m.id === id);
+          if (found) {
+            found.mediaUrl = mediaUrl;
+          }
+        }
+      }
+
+      // Broadcast update via Socket.IO
+      io.emit('message_media_updated', {
+        jid,
+        messageId: id,
+        mediaUrl,
+        fileName: msg.fileName,
+        content: msg.content,
+        mediaType: msg.mediaType,
+      });
+
+      res.json({
+        success: true,
+        mediaUrl,
+        fileName: msg.fileName,
+        content: msg.content,
+      });
+    } catch (e) {
+      const statusCode = e?.output?.statusCode || e?.data?.statusCode;
+      const isGone = statusCode === 410 || statusCode === 404 ||
+        (e.message && (e.message.includes('re-upload') || e.message.includes('re-upl')));
+
+      // If the URL refresh already failed AND the download also failed (any status),
+      // the media is unreachable on WA servers — treat as permanently gone.
+      if (isGone || refreshFailed) {
+        console.warn(`[Bridge] Media permanently unavailable for ${id} (${statusCode || refreshFailed ? 'refresh-failed' : 'gone'}): ${e.message}`);
+        return res.status(410).json({
+          error: 'Media is no longer available on WhatsApp servers.',
+          media_expired: true,
+        });
+      }
+
+      console.error(`[Bridge] On-demand media download failed for ${id}:`, e);
+      res.status(500).json({ error: `Failed to download media: ${e.message}` });
+    }
+  });
+
   // WebSocket (operator dashboard <-> server)
   io.on('connection', (socket) => {
     console.log(`[Bridge] Operator connected: ${socket.id}`);
@@ -869,6 +1024,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     if (whatsapp.getQrCodeData()) socket.emit('qr', whatsapp.getQrCodeData());
     socket.emit('groups', Object.values(stores.groupStore));
     socket.emit('chats', stores.sortedChats());
+    socket.emit('sync_status', stores.getSyncState());
 
     socket.on('set_operator_name', ({ name }) => {
       const op = operators.get(socket.id);

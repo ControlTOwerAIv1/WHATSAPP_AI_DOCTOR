@@ -31,6 +31,7 @@ const MAX_RECONNECT_DELAY = 300000;
 let reconnectTimer = null;
 let isConnecting = false;
 let isDisconnecting = false;
+let activeHistorySyncs = 0;
 
 // Retries unresolved @lid mappings periodically since Baileys' lid<->phone
 // mapping store fills in lazily and a single attempt at connect time often
@@ -653,222 +654,236 @@ async function connectToWhatsApp() {
     });
 
     sock.ev.on('messaging-history.set', async ({ chats, contacts, messages, isLatest }) => {
-      // On-demand responses (from requestOlderHistory / "load older messages")
-      // are flagged by Baileys with isLatest === undefined, unlike regular
-      // connect-time syncs which always pass a boolean. Use that to keep the
-      // MAX_MESSAGES_PER_CHAT cap for bulk initial sync while not discarding
-      // history a user explicitly asked to backfill.
-      const isOnDemand = isLatest === undefined;
-      // --- Process contacts and build lid<->jid map ---
-      for (const contact of contacts || []) {
-        contactStore[contact.id] = { ...contactStore[contact.id], ...contact };
-        // Track @lid <-> phone JID cross-reference mappings.
-        stores.addLidMapping(contactStore[contact.id]);
-        database.upsertContact(contactStore[contact.id]);
-      }
-      // --- Process chats ---
-      for (const chat of chats || []) {
-        const ts = stores.toTimestamp(chat.conversationTimestamp);
-        chatStore[chat.id] = stores.normalizeChat({
-          ...chatStore[chat.id],
-          id: chat.id,
-          name: chat.name || stores.chatDisplayName(chat.id),
-          type: stores.getChatType(chat.id),
-          unreadCount: chat.unreadCount || 0,
-          timestamp: ts,
-          lastMsg: chatStore[chat.id]?.lastMsg || '',
-        });
-        database.upsertChat(chatStore[chat.id]);
-      }
-      // --- Process history messages (this was the missing piece!) ---
-      let historyMsgCount = 0;
-      const touchedJids = new Set();
-      for (const rawMsg of messages || []) {
-        try {
-          // History messages arrive pre-parsed; they have a .message field like live messages.
-          if (!rawMsg?.message) continue;
-          const key = rawMsg.key || {};
-          const rawJid = key.remoteJid;
-          if (!rawJid) continue;
-          const jid = stores.getPreferredJid(rawJid);
-          let m = stores.unwrapMessage(rawMsg.message);
-          if (!m) continue;
-
-          if (handleProtocolMessage(rawMsg, m, { emitEvent: false })) {
-            touchedJids.add(jid);
-            continue;
-          }
-
-          // History messages can also carry verified business name certs;
-          // capture them the same way the live messages.upsert handler does,
-          // otherwise business contacts backfilled via history never get a name.
-          if (!jid.endsWith('@g.us')) {
-            const verifiedName = rawMsg.verifiedBizName || rawMsg.verifiedName;
-            const pushName = rawMsg.pushName;
-            if (verifiedName || pushName) {
-              if (!contactStore[jid]) contactStore[jid] = { id: jid };
-              let contactUpdated = false;
-              if (verifiedName && contactStore[jid].verifiedName !== verifiedName) {
-                contactStore[jid].verifiedName = verifiedName;
-                contactUpdated = true;
-              }
-              if (pushName && !contactStore[jid].name && contactStore[jid].notify !== pushName) {
-                contactStore[jid].notify = pushName;
-                contactUpdated = true;
-              }
-              if (contactUpdated) database.upsertContact(contactStore[jid]);
-            }
-          }
-
-          // Check if this is an ignored message type
-          const keys = Object.keys(m);
-          if (keys.length === 0) continue;
-          const isIgnored = keys.length === 1 && (
-            keys[0] === 'senderKeyDistributionMessage' ||
-            keys[0] === 'protocolMessage' ||
-            keys[0] === 'reactionMessage' ||
-            keys[0] === 'peerDataOperationRequestMessage' ||
-            keys[0] === 'emptyMessage'
-          );
-          if (isIgnored) continue;
-
-          let content = '';
-          let mediaType = 'text';
-          let mediaUrl = null;
-          // Extract text content from the most common history message shapes.
-          // Media is only downloaded for on-demand requests (user clicked "load
-          // older messages") - the bulk initial sync can cover thousands of
-          // messages and would be too slow/heavy to fetch media for.
-          if (m.conversation) {
-            content = m.conversation;
-          } else if (m.extendedTextMessage?.text) {
-            content = m.extendedTextMessage.text;
-          } else if (m.imageMessage) {
-            content = m.imageMessage.caption || '';
-            mediaType = 'image';
-            if (isOnDemand) {
-              try {
-                const buffer = await downloadMediaMessage(rawMsg, 'buffer', {});
-                const ext = mime.extension(m.imageMessage.mimetype) || 'jpg';
-                const filename = `${Date.now()}.${ext}`;
-                fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
-                mediaUrl = `/media/${filename}`;
-              } catch (e) {
-                console.error('[Bridge] History image download failed:', e.message);
-              }
-            }
-          } else if (m.videoMessage) {
-            content = m.videoMessage.caption || '';
-            mediaType = 'video';
-            if (isOnDemand) {
-              try {
-                const buffer = await downloadMediaMessage(rawMsg, 'buffer', {});
-                const ext = mime.extension(m.videoMessage.mimetype) || 'mp4';
-                const filename = `${Date.now()}.${ext}`;
-                fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
-                mediaUrl = `/media/${filename}`;
-              } catch (e) {
-                console.error('[Bridge] History video download failed:', e.message);
-              }
-            }
-          } else if (m.audioMessage) {
-            content = m.audioMessage.ptt ? 'Voice message' : 'Audio file';
-            mediaType = m.audioMessage.ptt ? 'voice' : 'audio';
-            if (isOnDemand) {
-              try {
-                const buffer = await downloadMediaMessage(rawMsg, 'buffer', {});
-                const ext = mime.extension(m.audioMessage.mimetype) || 'ogg';
-                const filename = `${Date.now()}.${ext}`;
-                fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
-                mediaUrl = `/media/${filename}`;
-              } catch (e) {
-                console.error('[Bridge] History audio download failed:', e.message);
-              }
-            }
-          } else if (m.documentMessage) {
-            content = `Document: ${m.documentMessage.fileName || 'file'}`;
-            mediaType = 'document';
-            if (isOnDemand) {
-              try {
-                const buffer = await downloadMediaMessage(rawMsg, 'buffer', {});
-                const safeName = (m.documentMessage.fileName || 'document').replace(/[^a-zA-Z0-9._-]/g, '_');
-                const filename = `${Date.now()}-${safeName}`;
-                fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
-                mediaUrl = `/media/${filename}`;
-              } catch (e) {
-                console.error('[Bridge] History document download failed:', e.message);
-              }
-            }
-          } else if (m.stickerMessage) {
-            content = 'Sticker';
-            mediaType = 'sticker';
-            if (isOnDemand) {
-              try {
-                const buffer = await downloadMediaMessage(rawMsg, 'buffer', {});
-                const filename = `${Date.now()}.webp`;
-                fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
-                mediaUrl = `/media/${filename}`;
-              } catch (e) {
-                console.error('[Bridge] History sticker download failed:', e.message);
-              }
-            }
-          } else if (m.locationMessage) {
-            content = m.locationMessage.name || 'Shared location';
-            mediaType = 'location';
-          } else if (m.contactMessage) {
-            content = `[Contact Card] ${m.contactMessage.displayName || 'Contact'}`;
-          } else if (m.contactsArrayMessage) {
-            const names = (m.contactsArrayMessage.contacts || []).map(c => c.displayName).filter(Boolean).join(', ');
-            content = `[Contacts] ${names || 'multiple contacts'}`;
-          } else if (m.pollCreationMessage || m.pollCreationMessageV2 || m.pollCreationMessageV3) {
-            const pollName = m.pollCreationMessage?.name || m.pollCreationMessageV2?.name || m.pollCreationMessageV3?.name || 'Poll';
-            content = `[Poll] Question: ${pollName}`;
-          } else if (m.groupInviteMessage) {
-            content = `[Group Invite] Group: ${m.groupInviteMessage.groupName || 'invite link'}`;
-          } else if (m.buttonsMessage || m.templateMessage || m.interactiveMessage || m.listMessage || m.highlyStructuredMessage || m.templateButtonReplyMessage) {
-            content = stores.parseInteractiveMessageText(m);
-          } else {
-            content = '[Unsupported message type]';
-          }
-          const msgRecord = {
-            id: key.id,
-            from: jid,
-            jid,
-            fromMe: Boolean(key.fromMe),
-            participant: rawMsg.participant || key.participant || null,
-            sender: rawMsg.pushName || rawMsg.participant || key.participant || null,
-            operatorId: null,
-            operatorName: null,
-            content,
-            mediaType,
-            mediaUrl,
-            fileName: m.documentMessage?.fileName || null,
-            mimetype: m.imageMessage?.mimetype || m.videoMessage?.mimetype || m.audioMessage?.mimetype || m.documentMessage?.mimetype || null,
-            timestamp: stores.toTimestamp(rawMsg.messageTimestamp),
-            isGroup: jid.endsWith('@g.us'),
-            editedAt: null,
-            deleted: Boolean(rawMsg.message?.protocolMessage?.type === 0),
-            clientTempId: null,
-            status: rawMsg.status !== undefined ? rawMsg.status : null,
-          };
-          if (!msgRecord.id || !msgRecord.jid) continue;
-          // addMessageToStore deduplicates, sorts, trims, and persists to DB.
-          stores.addMessageToStore(msgRecord, { skipTrim: isOnDemand });
-          touchedJids.add(jid);
-          historyMsgCount++;
-        } catch (histErr) {
-          // Don't let one bad history message crash the entire sync.
-          console.warn('[Bridge] Skipping bad history message:', histErr.message);
+      activeHistorySyncs++;
+      stores.updateSyncState({ syncingHistory: true });
+      try {
+        // On-demand responses (from requestOlderHistory / "load older messages")
+        // are flagged by Baileys with isLatest === undefined, unlike regular
+        // connect-time syncs which always pass a boolean. Use that to keep the
+        // MAX_MESSAGES_PER_CHAT cap for bulk initial sync while not discarding
+        // history a user explicitly asked to backfill.
+        const isOnDemand = isLatest === undefined;
+        // --- Process contacts and build lid<->jid map ---
+        for (const contact of contacts || []) {
+          contactStore[contact.id] = { ...contactStore[contact.id], ...contact };
+          // Track @lid <-> phone JID cross-reference mappings.
+          stores.addLidMapping(contactStore[contact.id]);
+          database.upsertContact(contactStore[contact.id]);
         }
-      }
-      stores.broadcastChats();
-      stores.backfillContactNames();
-      stores.saveStore();
-      console.log(`[Bridge] History sync: ${chats?.length || 0} chats, ${contacts?.length || 0} contacts, ${historyMsgCount} messages (isLatest=${isLatest})`);
-      // Resolve any on-demand history requests (from "load older messages")
-      // waiting on one of the jids that just received new messages.
-      for (const jid of touchedJids) {
-        resolvePendingHistoryRequest(jid);
+        // --- Process chats ---
+        for (const chat of chats || []) {
+          const ts = stores.toTimestamp(chat.conversationTimestamp);
+          chatStore[chat.id] = stores.normalizeChat({
+            ...chatStore[chat.id],
+            id: chat.id,
+            name: chat.name || stores.chatDisplayName(chat.id),
+            type: stores.getChatType(chat.id),
+            unreadCount: chat.unreadCount || 0,
+            timestamp: ts,
+            lastMsg: chatStore[chat.id]?.lastMsg || '',
+          });
+          database.upsertChat(chatStore[chat.id]);
+        }
+        // --- Process history messages (this was the missing piece!) ---
+        let historyMsgCount = 0;
+        const touchedJids = new Set();
+        for (const rawMsg of messages || []) {
+          try {
+            // History messages arrive pre-parsed; they have a .message field like live messages.
+            if (!rawMsg?.message) continue;
+            const key = rawMsg.key || {};
+            const rawJid = key.remoteJid;
+            if (!rawJid) continue;
+            const jid = stores.getPreferredJid(rawJid);
+            let m = stores.unwrapMessage(rawMsg.message);
+            if (!m) continue;
+
+            if (handleProtocolMessage(rawMsg, m, { emitEvent: false })) {
+              touchedJids.add(jid);
+              continue;
+            }
+
+            // History messages can also carry verified business name certs;
+            // capture them the same way the live messages.upsert handler does,
+            // otherwise business contacts backfilled via history never get a name.
+            if (!jid.endsWith('@g.us')) {
+              const verifiedName = rawMsg.verifiedBizName || rawMsg.verifiedName;
+              const pushName = rawMsg.pushName;
+              if (verifiedName || pushName) {
+                if (!contactStore[jid]) contactStore[jid] = { id: jid };
+                let contactUpdated = false;
+                if (verifiedName && contactStore[jid].verifiedName !== verifiedName) {
+                  contactStore[jid].verifiedName = verifiedName;
+                  contactUpdated = true;
+                }
+                if (pushName && !contactStore[jid].name && contactStore[jid].notify !== pushName) {
+                  contactStore[jid].notify = pushName;
+                  contactUpdated = true;
+                }
+                if (contactUpdated) database.upsertContact(contactStore[jid]);
+              }
+            }
+
+            // Check if this is an ignored message type
+            const keys = Object.keys(m);
+            if (keys.length === 0) continue;
+            const isIgnored = keys.length === 1 && (
+              keys[0] === 'senderKeyDistributionMessage' ||
+              keys[0] === 'protocolMessage' ||
+              keys[0] === 'reactionMessage' ||
+              keys[0] === 'peerDataOperationRequestMessage' ||
+              keys[0] === 'emptyMessage'
+            );
+            if (isIgnored) continue;
+
+            let content = '';
+            let mediaType = 'text';
+            let mediaUrl = null;
+            // Extract text content from the most common history message shapes.
+            // Media is only downloaded for on-demand requests (user clicked "load
+            // older messages") - the bulk initial sync can cover thousands of
+            // messages and would be too slow/heavy to fetch media for.
+            if (m.conversation) {
+              content = m.conversation;
+            } else if (m.extendedTextMessage?.text) {
+              content = m.extendedTextMessage.text;
+            } else if (m.imageMessage) {
+              content = m.imageMessage.caption || '';
+              mediaType = 'image';
+              if (isOnDemand) {
+                try {
+                  const buffer = await downloadMediaMessage(rawMsg, 'buffer', {});
+                  const ext = mime.extension(m.imageMessage.mimetype) || 'jpg';
+                  const filename = `${Date.now()}.${ext}`;
+                  fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
+                  mediaUrl = `/media/${filename}`;
+                } catch (e) {
+                  console.error('[Bridge] History image download failed:', e.message);
+                }
+              }
+            } else if (m.videoMessage) {
+              content = m.videoMessage.caption || '';
+              mediaType = 'video';
+              if (isOnDemand) {
+                try {
+                  const buffer = await downloadMediaMessage(rawMsg, 'buffer', {});
+                  const ext = mime.extension(m.videoMessage.mimetype) || 'mp4';
+                  const filename = `${Date.now()}.${ext}`;
+                  fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
+                  mediaUrl = `/media/${filename}`;
+                } catch (e) {
+                  console.error('[Bridge] History video download failed:', e.message);
+                }
+              }
+            } else if (m.audioMessage) {
+              content = m.audioMessage.ptt ? 'Voice message' : 'Audio file';
+              mediaType = m.audioMessage.ptt ? 'voice' : 'audio';
+              if (isOnDemand) {
+                try {
+                  const buffer = await downloadMediaMessage(rawMsg, 'buffer', {});
+                  const ext = mime.extension(m.audioMessage.mimetype) || 'ogg';
+                  const filename = `${Date.now()}.${ext}`;
+                  fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
+                  mediaUrl = `/media/${filename}`;
+                } catch (e) {
+                  console.error('[Bridge] History audio download failed:', e.message);
+                }
+              }
+            } else if (m.documentMessage) {
+              content = `Document: ${m.documentMessage.fileName || 'file'}`;
+              mediaType = 'document';
+              if (isOnDemand) {
+                try {
+                  const buffer = await downloadMediaMessage(rawMsg, 'buffer', {});
+                  const safeName = (m.documentMessage.fileName || 'document').replace(/[^a-zA-Z0-9._-]/g, '_');
+                  const filename = `${Date.now()}-${safeName}`;
+                  fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
+                  mediaUrl = `/media/${filename}`;
+                } catch (e) {
+                  console.error('[Bridge] History document download failed:', e.message);
+                }
+              }
+            } else if (m.stickerMessage) {
+              content = 'Sticker';
+              mediaType = 'sticker';
+              if (isOnDemand) {
+                try {
+                  const buffer = await downloadMediaMessage(rawMsg, 'buffer', {});
+                  const filename = `${Date.now()}.webp`;
+                  fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
+                  mediaUrl = `/media/${filename}`;
+                } catch (e) {
+                  console.error('[Bridge] History sticker download failed:', e.message);
+                }
+              }
+            } else if (m.locationMessage) {
+              content = m.locationMessage.name || 'Shared location';
+              mediaType = 'location';
+            } else if (m.contactMessage) {
+              content = `[Contact Card] ${m.contactMessage.displayName || 'Contact'}`;
+            } else if (m.contactsArrayMessage) {
+              const names = (m.contactsArrayMessage.contacts || []).map(c => c.displayName).filter(Boolean).join(', ');
+              content = `[Contacts] ${names || 'multiple contacts'}`;
+            } else if (m.pollCreationMessage || m.pollCreationMessageV2 || m.pollCreationMessageV3) {
+              const pollName = m.pollCreationMessage?.name || m.pollCreationMessageV2?.name || m.pollCreationMessageV3?.name || 'Poll';
+              content = `[Poll] Question: ${pollName}`;
+            } else if (m.groupInviteMessage) {
+              content = `[Group Invite] Group: ${m.groupInviteMessage.groupName || 'invite link'}`;
+            } else if (m.buttonsMessage || m.templateMessage || m.interactiveMessage || m.listMessage || m.highlyStructuredMessage || m.templateButtonReplyMessage) {
+              content = stores.parseInteractiveMessageText(m);
+            } else {
+              content = '[Unsupported message type]';
+            }
+            const isMedia = ['image', 'video', 'audio', 'voice', 'document', 'sticker'].includes(mediaType);
+            const rawMsgMinimized = (isMedia && (!mediaUrl || mediaUrl === 'null')) ? { key: rawMsg.key, message: rawMsg.message } : null;
+
+            const msgRecord = {
+              id: key.id,
+              from: jid,
+              jid,
+              fromMe: Boolean(key.fromMe),
+              participant: rawMsg.participant || key.participant || null,
+              sender: rawMsg.pushName || rawMsg.participant || key.participant || null,
+              operatorId: null,
+              operatorName: null,
+              content,
+              mediaType,
+              mediaUrl,
+              fileName: m.documentMessage?.fileName || null,
+              mimetype: m.imageMessage?.mimetype || m.videoMessage?.mimetype || m.audioMessage?.mimetype || m.documentMessage?.mimetype || null,
+              timestamp: stores.toTimestamp(rawMsg.messageTimestamp),
+              isGroup: jid.endsWith('@g.us'),
+              editedAt: null,
+              deleted: Boolean(rawMsg.message?.protocolMessage?.type === 0),
+              clientTempId: null,
+              status: rawMsg.status !== undefined ? rawMsg.status : null,
+              raw: rawMsgMinimized,
+            };
+            if (!msgRecord.id || !msgRecord.jid) continue;
+            // addMessageToStore deduplicates, sorts, trims, and persists to DB.
+            stores.addMessageToStore(msgRecord, { skipTrim: isOnDemand });
+            touchedJids.add(jid);
+            historyMsgCount++;
+          } catch (histErr) {
+            // Don't let one bad history message crash the entire sync.
+            console.warn('[Bridge] Skipping bad history message:', histErr.message);
+          }
+        }
+        stores.broadcastChats();
+        stores.backfillContactNames();
+        stores.saveStore();
+        console.log(`[Bridge] History sync: ${chats?.length || 0} chats, ${contacts?.length || 0} contacts, ${historyMsgCount} messages (isLatest=${isLatest})`);
+        // Resolve any on-demand history requests (from "load older messages")
+        // waiting on one of the jids that just received new messages.
+        for (const jid of touchedJids) {
+          resolvePendingHistoryRequest(jid);
+        }
+      } finally {
+        activeHistorySyncs--;
+        if (activeHistorySyncs <= 0) {
+          activeHistorySyncs = 0;
+          stores.updateSyncState({ syncingHistory: false });
+        }
       }
     });
 
@@ -1080,6 +1095,7 @@ async function parseMessage(raw, skipMedia = false) {
     quotedSender,
     quotedMediaType,
     status: raw.status !== undefined ? raw.status : null,
+    raw: (['image', 'video', 'audio', 'voice', 'document', 'sticker'].includes(mediaType) && (!mediaUrl || mediaUrl === 'null')) ? { key: raw.key, message: raw.message } : null,
   };
 }
 

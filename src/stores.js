@@ -33,12 +33,73 @@ let linkingOperator = null;
 
 let saveTimer = null;
 const pendingResolutions = new Set();
+// LIDs that returned null from getPNForLID — maps lid -> timestamp of last failed attempt.
+// Persisted to disk so restarts don't re-flood with retries for already-failed LIDs.
+// In-memory: skipped for LID_RETRY_COOLDOWN_MS to avoid flooding on every render.
+// On disk: all failures are kept permanently until the LID actually resolves.
+const failedResolutions = new Map();
+const LID_RETRY_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour between render-time retries
+const LID_FAILED_CACHE_FILE = () => ROOT_DIR ? path.join(ROOT_DIR, 'data', 'failed_lids.json') : null;
+
+function loadFailedResolutions() {
+  const file = LID_FAILED_CACHE_FILE();
+  if (!file) return;
+  try {
+    if (fs.existsSync(file)) {
+      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      // Load ALL past failures — don't filter by age.
+      // This prevents flooding on restart. The background resolver will retry
+      // them slowly over time; render-time retries are throttled by LID_RETRY_COOLDOWN_MS.
+      let count = 0;
+      for (const [lid, ts] of Object.entries(raw)) {
+        failedResolutions.set(lid, ts);
+        count++;
+      }
+      if (count > 0) {
+        console.log(`[Bridge] Loaded ${count} previously-failed LID resolutions from disk (will retry slowly in background).`);
+      }
+    }
+  } catch (e) {
+    // Non-critical — ignore errors reading cache
+  }
+}
+
+function saveFailedResolutions() {
+  const file = LID_FAILED_CACHE_FILE();
+  if (!file) return;
+  try {
+    const dir = path.dirname(file);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const obj = {};
+    for (const [lid, ts] of failedResolutions) obj[lid] = ts;
+    fs.writeFileSync(file, JSON.stringify(obj), 'utf8');
+  } catch (e) {
+    // Non-critical
+  }
+}
 const DEFAULT_EDIT_WINDOW_SECONDS = 15 * 60;
 const DEFAULT_DELETE_FOR_EVERYONE_WINDOW_SECONDS = 60 * 60 * 60;
+
+const syncState = {
+  syncingHistory: false,
+  resolvingLids: false
+};
+
+function getSyncState() {
+  return syncState;
+}
+
+function updateSyncState(updates) {
+  Object.assign(syncState, updates);
+  if (io) {
+    io.emit('sync_status', syncState);
+  }
+}
 
 function init({ rootDir, config }) {
   ROOT_DIR = rootDir;
   CONFIG = config;
+  loadFailedResolutions();
 }
 
 function setIo(ioInstance) { io = ioInstance; }
@@ -112,16 +173,17 @@ function toTimestamp(ts) {
 async function resolveLidToPhoneAsync(lid) {
   if (!lid || !lid.endsWith('@lid')) return null;
   if (lidToJid[lid]) return lidToJid[lid];
+  if (!sock || !sock.user) return null;
   if (pendingResolutions.has(lid)) return null;
+
+  // Skip LIDs that recently failed to avoid flooding on every render
+  const lastFailed = failedResolutions.get(lid);
+  if (lastFailed && (Date.now() - lastFailed) < LID_RETRY_COOLDOWN_MS) return null;
 
   pendingResolutions.add(lid);
   console.log(`[Bridge] Starting resolution for LID: ${lid}`);
 
   try {
-    if (!sock) {
-      console.log(`[Bridge] Cannot resolve LID ${lid}: sock is not initialized.`);
-      return null;
-    }
     if (!sock.signalRepository) {
       console.log(`[Bridge] Cannot resolve LID ${lid}: sock.signalRepository is undefined.`);
       return null;
@@ -136,6 +198,7 @@ async function resolveLidToPhoneAsync(lid) {
       console.log(`[Bridge] Resolved LID ${lid} -> PN ${pn}`);
       lidToJid[lid] = pn;
       jidToLid[pn] = lid;
+      failedResolutions.delete(lid); // clear any previous failure record
 
       // Persist to contacts
       const existing = contactStore[lid] || { id: lid };
@@ -156,10 +219,14 @@ async function resolveLidToPhoneAsync(lid) {
 
       return pn;
     } else {
-      console.log(`[Bridge] Baileys getPNForLID returned null/undefined for LID ${lid}`);
+      // Cache the failure so we don't retry for LID_RETRY_COOLDOWN_MS
+      failedResolutions.set(lid, Date.now());
+      saveFailedResolutions();
     }
   } catch (e) {
     console.warn(`[Bridge] Error resolving LID ${lid}:`, e.message);
+    failedResolutions.set(lid, Date.now());
+    saveFailedResolutions();
   } finally {
     pendingResolutions.delete(lid);
   }
@@ -217,19 +284,17 @@ function mergeLidChatToPhone(lid, pn) {
 
   // 3. Update database messages
   try {
-    const rows = database.db.prepare('SELECT id, payload FROM messages WHERE jid = ?').all(lid);
-    if (rows.length > 0) {
-      const updateStmt = database.db.prepare('UPDATE messages SET jid = ?, payload = ? WHERE id = ?');
-      const tx = database.db.transaction((items) => {
-        for (const r of items) {
-          const parsedPayload = JSON.parse(r.payload);
-          parsedPayload.jid = pn;
-          if (parsedPayload.from === lid) parsedPayload.from = pn;
-          updateStmt.run(pn, JSON.stringify(parsedPayload), r.id);
-        }
-      });
-      tx(rows);
-    }
+    const sql = `
+      UPDATE messages 
+      SET jid = ?, 
+          payload = json_set(
+            json_set(payload, '$.jid', ?),
+            '$.from', 
+            CASE WHEN json_extract(payload, '$.from') = ? THEN ? ELSE json_extract(payload, '$.from') END
+          )
+      WHERE jid = ?
+    `;
+    database.db.prepare(sql).run(pn, pn, lid, pn, lid);
   } catch (err) {
     console.warn('[Bridge] Error migrating database messages:', err.message);
   }
@@ -238,25 +303,51 @@ function mergeLidChatToPhone(lid, pn) {
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function resolveAllLidsFromStore() {
-  console.log('[Bridge] Starting background resolution for all stored LIDs...');
-  let resolvedCount = 0;
-  for (const jid of Object.keys(chatStore)) {
-    if (jid.endsWith('@lid') && !lidToJid[jid]) {
+  if (!sock || !sock.user) return;
+  updateSyncState({ resolvingLids: true });
+  try {
+    const now = Date.now();
+    const lidsToTry = new Set();
+
+    for (const jid of Object.keys(chatStore)) {
+      if (jid.endsWith('@lid') && !lidToJid[jid]) lidsToTry.add(jid);
+    }
+    for (const jid of Object.keys(contactStore)) {
+      if (jid.endsWith('@lid') && !lidToJid[jid]) lidsToTry.add(jid);
+    }
+
+    // Separate into: never tried vs recently failed (skip) vs old failures (retry quietly)
+    const fresh = [];
+    const stale = [];
+    for (const jid of lidsToTry) {
+      const lastFailed = failedResolutions.get(jid);
+      if (!lastFailed) {
+        fresh.push(jid); // never tried
+      } else if (now - lastFailed > LID_RETRY_COOLDOWN_MS) {
+        stale.push(jid); // failed before but worth a quiet retry
+      }
+      // else: failed recently, skip entirely
+    }
+
+    const skipped = lidsToTry.size - fresh.length - stale.length;
+    console.log(`[Bridge] Background LID resolution: ${fresh.length} new, ${stale.length} retry, ${skipped} skipped (recently failed)`);
+
+    let resolvedCount = 0;
+    for (const jid of [...fresh, ...stale]) {
+      if (!sock || !sock.user) return;
       const pn = await resolveLidToPhoneAsync(jid);
       if (pn) resolvedCount++;
-      await delay(1000);
+      await delay(500);
     }
-  }
-  for (const jid of Object.keys(contactStore)) {
-    if (jid.endsWith('@lid') && !lidToJid[jid]) {
-      const pn = await resolveLidToPhoneAsync(jid);
-      if (pn) resolvedCount++;
-      await delay(1000);
+
+    if (resolvedCount > 0) {
+      console.log(`[Bridge] Background resolution finished. Resolved ${resolvedCount} LIDs to phone numbers.`);
+      backfillContactNames();
+    } else if (fresh.length + stale.length > 0) {
+      console.log('[Bridge] Background LID resolution finished. No new LIDs resolved.');
     }
-  }
-  if (resolvedCount > 0) {
-    console.log(`[Bridge] Background resolution finished. Resolved ${resolvedCount} LIDs to phone numbers.`);
-    backfillContactNames();
+  } finally {
+    updateSyncState({ resolvingLids: false });
   }
 }
 
@@ -1077,4 +1168,7 @@ module.exports = {
   updateChatPreview,
   recordOutboundMessage,
   sendLockError,
+  getSyncState,
+  updateSyncState,
+  getThreadJids,
 };

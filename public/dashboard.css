@@ -96,6 +96,15 @@
       color: var(--danger);
     }
 
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 10px;
+      height: 10px;
+      flex-shrink: 0;
+    }
+
     .status-dot {
       width: 6px;
       height: 6px;
@@ -108,15 +117,21 @@
     }
 
     @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
 
-      0%,
-      100% {
-        opacity: 1
-      }
+    .status-sync-spinner {
+      width: 9px;
+      height: 9px;
+      border: 1.5px solid currentColor;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+    }
 
-      50% {
-        opacity: 0.3
-      }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
     }
 
     .btn {
@@ -947,6 +962,50 @@
 
     .msg-document:hover {
       background: rgba(255, 255, 255, 0.1);
+    }
+
+    .msg-media-placeholder, .msg-document-placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 6px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px dashed rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+      margin-bottom: 6px;
+      cursor: pointer;
+      text-align: center;
+      transition: background 0.2s, border-color 0.2s;
+    }
+
+    .msg-media-placeholder:hover, .msg-document-placeholder:hover {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(255, 255, 255, 0.25);
+    }
+
+    .msg-document-placeholder {
+      flex-direction: row;
+      justify-content: flex-start;
+      text-align: left;
+      border: 1px dashed rgba(255, 255, 255, 0.15);
+    }
+
+    .msg-media-placeholder.loading, .msg-document-placeholder.loading {
+      cursor: wait;
+      opacity: 0.8;
+      border-style: solid;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .placeholder-icon {
+      font-size: 20px;
+    }
+
+    .placeholder-text {
+      font-size: 11px;
+      opacity: 0.8;
     }
 
     .doc-icon {
@@ -2712,4 +2771,23 @@
       background: rgba(239, 68, 68, 0.05);
     }
 
+    .msg-media-unavailable {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: var(--text-muted, #6b7280);
+      font-size: 12px;
+      font-style: italic;
+      cursor: default;
+      user-select: none;
+    }
+
+    .msg-media-unavailable .media-unavailable-icon {
+      font-size: 14px;
+      opacity: 0.6;
+    }
 

@@ -142,7 +142,10 @@
         <span>ECHO</span>
       </div>
       <div class="status-pill disconnected" id="statusPill">
-        <div class="status-dot"></div>
+        <div class="status-indicator">
+          <div class="status-dot" id="statusDot"></div>
+          <div class="status-sync-spinner" id="syncSpinner" style="display:none;" title="Syncing in background…"></div>
+        </div>
         <span id="statusText">Offline</span>
       </div>
     </div>
@@ -206,7 +209,7 @@
               <button class="mobile-back-btn" onclick="backToSidebar()" aria-label="Back to conversations">
                 <svg viewBox="0 0 24 24" width="24" height="24">
                   <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" fill="currentColor"/>
-                </svg>
+                </svg> 
               </button>
               <div class="chat-topbar-avatar" id="chatTopAvatar">G</div>
               <div>

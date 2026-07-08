@@ -408,6 +408,94 @@
     }
     function closeLightbox() { document.getElementById('lightbox').classList.add('hidden'); }
 
+    // ─── On-Demand Media Download ─────────────────────────────────────────────────
+    async function downloadMediaOnDemand(jid, msgId, element, type) {
+      if (element.classList.contains('loading')) return;
+      element.classList.add('loading');
+
+      const textElement = element.querySelector('.placeholder-text') || element.querySelector('.doc-size');
+      const originalText = textElement ? textElement.innerText : '';
+      if (textElement) {
+        textElement.innerText = 'Loading media...';
+      }
+
+      try {
+        const response = await fetch(`${bridgeUrl}/api/messages/${encodeURIComponent(jid)}/${encodeURIComponent(msgId)}/download-media`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (response.status === 410) {
+          const errData = await response.json().catch(() => ({}));
+          if (errData.media_expired) {
+            // Replace placeholder with a permanent "unavailable" state
+            element.outerHTML = `<div class="msg-media-unavailable">
+              <span class="media-unavailable-icon">🚫</span>
+              <span>Media no longer available</span>
+            </div>`;
+            return;
+          }
+        }
+
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(errData.error || 'Failed to download media');
+        }
+
+        const data = await response.json();
+        if (data.success && data.mediaUrl) {
+          const absoluteMediaUrl = data.mediaUrl.startsWith('http') ? data.mediaUrl : `${bridgeUrl}${data.mediaUrl}`;
+          const fileName = data.fileName || 'Document';
+          const content = data.content || '';
+
+          let html = '';
+          if (type === 'image') {
+            html = `<img class="msg-image" src="${absoluteMediaUrl}" alt="Image" onclick="openLightbox('${absoluteMediaUrl}')">
+                    <div class="msg-text">${content}</div>`;
+          } else if (type === 'video') {
+            html = `<video class="msg-video" controls><source src="${absoluteMediaUrl}"></video>
+                    <div class="msg-text">${content}</div>`;
+          } else if (type === 'audio') {
+            html = `<audio class="msg-audio" controls><source src="${absoluteMediaUrl}"></audio>`;
+          } else if (type === 'document') {
+            html = `<a class="msg-document" href="${absoluteMediaUrl}" target="_blank" download>
+              <div class="doc-icon">${getDocIcon(fileName)}</div>
+              <div>
+                <div class="doc-name">${fileName}</div>
+                <div class="doc-size">Tap to download</div>
+              </div>
+            </a>`;
+          } else if (type === 'sticker') {
+            html = `<img class="msg-sticker" src="${absoluteMediaUrl}" alt="Sticker">`;
+          }
+
+          if (html) {
+            element.outerHTML = html;
+            if (type === 'document') {
+              const link = document.createElement('a');
+              link.href = absoluteMediaUrl;
+              link.target = '_blank';
+              link.download = fileName;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+            }
+          }
+        } else {
+          throw new Error('No media URL returned');
+        }
+      } catch (e) {
+        console.error(e);
+        showToast(e.message, 'error');
+        element.classList.remove('loading');
+        if (textElement) {
+          textElement.innerText = originalText;
+        }
+      }
+    }
+
     // ─── Chat List ────────────────────────────────────────────────────────────────
     let activeSidebarTab = 'chats';
 
@@ -958,18 +1046,46 @@
 
     // ─── Message Rendering ────────────────────────────────────────────────────────
     function buildMediaContent(msg) {
+      const hasMedia = msg.mediaUrl && msg.mediaUrl !== 'null';
       switch (msg.mediaType) {
         case 'image':
+          if (!hasMedia) {
+            return `<div class="msg-media-placeholder" onclick="downloadMediaOnDemand('${msg.jid}', '${msg.id}', this, 'image')">
+              <div class="placeholder-icon">🖼️</div>
+              <div class="placeholder-text">Click to load image</div>
+            </div>`;
+          }
           return `<img class="msg-image" src="${msg.mediaUrl}" alt="Image" onclick="openLightbox('${msg.mediaUrl}')">
               <div class="msg-text">${msg.content || ''}</div>`;
         case 'video':
+          if (!hasMedia) {
+            return `<div class="msg-media-placeholder" onclick="downloadMediaOnDemand('${msg.jid}', '${msg.id}', this, 'video')">
+              <div class="placeholder-icon">🎥</div>
+              <div class="placeholder-text">Click to load video</div>
+            </div>`;
+          }
           return `<video class="msg-video" controls><source src="${msg.mediaUrl}"></video>
               <div class="msg-text">${msg.content || ''}</div>`;
         case 'voice':
         case 'audio':
+          if (!hasMedia) {
+            return `<div style="margin-bottom:4px;font-size:11px;opacity:0.7">${msg.mediaType === 'voice' ? '🎤 Voice Message' : '🎵 Audio'}</div>
+            <div class="msg-media-placeholder" onclick="downloadMediaOnDemand('${msg.jid}', '${msg.id}', this, 'audio')">
+              <div class="placeholder-text">Click to load audio</div>
+            </div>`;
+          }
           return `<div style="margin-bottom:4px;font-size:11px;opacity:0.7">${msg.mediaType === 'voice' ? '🎤 Voice Message' : '🎵 Audio'}</div>
               <audio class="msg-audio" controls><source src="${msg.mediaUrl}"></audio>`;
         case 'document':
+          if (!hasMedia) {
+            return `<div class="msg-document-placeholder" onclick="downloadMediaOnDemand('${msg.jid}', '${msg.id}', this, 'document')">
+        <div class="doc-icon">${getDocIcon(msg.fileName || msg.content)}</div>
+        <div>
+          <div class="doc-name">${msg.fileName || msg.content || 'Document'}</div>
+          <div class="doc-size">Click to load document</div>
+        </div>
+      </div>`;
+          }
           return `<a class="msg-document" href="${msg.mediaUrl}" target="_blank" download>
         <div class="doc-icon">${getDocIcon(msg.fileName || msg.content)}</div>
         <div>
@@ -978,6 +1094,11 @@
         </div>
       </a>`;
         case 'sticker':
+          if (!hasMedia) {
+            return `<div class="msg-media-placeholder sticker-placeholder" onclick="downloadMediaOnDemand('${msg.jid}', '${msg.id}', this, 'sticker')">
+              <div class="placeholder-text">Click to load sticker</div>
+            </div>`;
+          }
           return `<img class="msg-sticker" src="${msg.mediaUrl}" alt="Sticker">`;
         case 'location':
           return `<a class="msg-location" href="${msg.mediaUrl}" target="_blank">
@@ -2218,6 +2339,49 @@
         if (isActiveChatJid(jid)) {
           updateMessageInPlace(messageId, newContent, editedAt);
         }
+      });
+
+      socket.on('message_media_updated', ({ jid, messageId, mediaUrl, fileName, content, mediaType }) => {
+        if (isActiveChatJid(jid)) {
+          const row = document.getElementById('msg-' + messageId);
+          if (row) {
+            const placeholder = row.querySelector('.msg-media-placeholder, .msg-document-placeholder');
+            if (placeholder) {
+              const absoluteMediaUrl = mediaUrl.startsWith('http') ? mediaUrl : `${bridgeUrl}${mediaUrl}`;
+              let html = '';
+              if (mediaType === 'image') {
+                html = `<img class="msg-image" src="${absoluteMediaUrl}" alt="Image" onclick="openLightbox('${absoluteMediaUrl}')">
+                        <div class="msg-text">${content || ''}</div>`;
+              } else if (mediaType === 'video') {
+                html = `<video class="msg-video" controls><source src="${absoluteMediaUrl}"></video>
+                        <div class="msg-text">${content || ''}</div>`;
+              } else if (mediaType === 'audio' || mediaType === 'voice') {
+                html = `<audio class="msg-audio" controls><source src="${absoluteMediaUrl}"></audio>`;
+              } else if (mediaType === 'document') {
+                html = `<a class="msg-document" href="${absoluteMediaUrl}" target="_blank" download>
+                  <div class="doc-icon">${getDocIcon(fileName || content)}</div>
+                  <div>
+                    <div class="doc-name">${fileName || content || 'Document'}</div>
+                    <div class="doc-size">Tap to download</div>
+                  </div>
+                </a>`;
+              } else if (mediaType === 'sticker') {
+                html = `<img class="msg-sticker" src="${absoluteMediaUrl}" alt="Sticker">`;
+              }
+              if (html) {
+                placeholder.outerHTML = html;
+              }
+            }
+          }
+        }
+      });
+
+      socket.on('sync_status', (state) => {
+        const isSyncing = state.syncingHistory || state.resolvingLids;
+        const spinner = document.getElementById('syncSpinner');
+        const dot = document.getElementById('statusDot');
+        if (spinner) spinner.style.display = isSyncing ? 'block' : 'none';
+        if (dot) dot.style.display = isSyncing ? 'none' : 'block';
       });
 
       socket.on('message_deleted', ({ jid, messageId }) => {
