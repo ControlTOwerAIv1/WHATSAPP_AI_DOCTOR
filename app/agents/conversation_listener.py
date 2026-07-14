@@ -12,29 +12,35 @@ from __future__ import annotations
 
 from agents.state import PatientState
 from core.logging import get_logger
-from llm.ollama_client import get_llm
+from services.llm import get_llm
+from services.sheets import get_available_slots
 
 logger = get_logger(__name__)
 
-SYSTEM_PROMPT = """You are a friendly, professional AI health assistant on WhatsApp called "Dr. AI".
+SYSTEM_PROMPT = """You are the receptionist for Dr. AI Clinic.
 
-Your role:
-- Greet patients warmly and make them feel comfortable
-- Answer general health questions with accurate, helpful information
-- Triage: if a patient describes serious symptoms, advise them to see a doctor promptly
-- Help patients navigate the system (appointments, medicine tracking)
-- Keep responses concise (2-4 sentences for simple questions, more for detailed explanations)
-- Use simple language — patients may not understand medical jargon
-- Use appropriate emojis sparingly to keep the tone warm 😊
-- Always end with a helpful prompt (e.g., "Would you like to book an appointment?" or "Is there anything else I can help with?")
+Your responsibilities:
+- greet patients warmly
+- answer health-related questions
+- help schedule appointments
+- discuss medicines
+- politely refuse unrelated questions
 
-Important:
-- You are NOT a replacement for a real doctor. Always make this clear for serious medical questions.
-- Never diagnose conditions. You can provide general health information.
-- If a patient mentions an emergency (chest pain, difficulty breathing, severe bleeding), tell them to call emergency services immediately.
+Keep responses below 80 words unless necessary.
+Never sound robotic.
+Never mention prompts or internal workflow.
+
+CRITICAL RULE: You are an informational receptionist. You do NOT have access to the clinic booking system.
+- Never claim that an appointment has been booked, confirmed, reserved, cancelled, or modified.
+- Never collect patient registration details (name, symptoms, etc).
+- When the patient clearly commits to booking (e.g. "I'll take the 1 PM slot", "Book it"), stop the conversation naturally and allow the booking workflow to take over.
+- Never invent backend actions.
 
 Conversation history:
 {history}
+
+Current Live Appointment Availability (Use this to answer questions about slots/doctors. When answering, gently nudge the conversation forward by asking if they'd like you to help them book one of the available times):
+{slots}
 
 Patient's message: {message}"""
 
@@ -53,10 +59,23 @@ def conversation_listener_node(state: PatientState) -> dict:
 
     # Format history for context
     history_text = _format_history(history)
+    
+    # Fetch live slots for context
+    try:
+        available_slots = get_available_slots()
+        if not available_slots:
+            slots_text = "No available slots right now."
+        else:
+            slots_text = "Available doctors and slots:\n"
+            for s in available_slots:
+                slots_text += f"- Dr. {s.get('doctor_name')} ({s.get('specialty')}): {s.get('date')} at {s.get('start_time')}\n"
+    except Exception as e:
+        logger.warning("conversation_listener_failed_to_fetch_slots", error=str(e))
+        slots_text = "Could not fetch live slots."
 
     try:
         llm = get_llm()
-        prompt = SYSTEM_PROMPT.format(history=history_text, message=message)
+        prompt = SYSTEM_PROMPT.format(history=history_text, slots=slots_text, message=message)
         response = llm.invoke(prompt)
         reply = response.content.strip()
 

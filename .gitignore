@@ -10,3 +10,6 @@ ollama_data/
 voice-service/storage/
 *.db
 .pytest_cache/
+app/credentials.json
+cloudflared.exe
+cloudflare_output.txt

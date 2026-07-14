@@ -1,11 +1,15 @@
 """
-Webhook Routes — WhatsApp webhook verification and message reception.
+Webhook Routes — WhatsApp webhook verification and message reception (Meta).
 
 GET  /webhook  — Meta verification handshake
 POST /webhook  — Receive inbound WhatsApp messages
 
-The POST endpoint returns 200 immediately and dispatches message
-processing to a background task so we never exceed Meta's timeout.
+These endpoints are kept for future production use with Meta's Cloud API.
+For the demo, the Twilio webhook at POST /whatsapp is the primary endpoint.
+
+NOTE: The dispatcher module depends on PostgreSQL / SQLModel which are
+not available in the demo stack.  Imports are deferred so the app starts
+cleanly even when Meta env vars are empty.
 """
 
 from __future__ import annotations
@@ -14,7 +18,6 @@ from fastapi import APIRouter, BackgroundTasks, Query, Request, Response
 
 from core.config import get_settings
 from core.logging import bind_context, get_logger
-from webhooks.dispatcher import process_incoming_message
 
 logger = get_logger(__name__)
 
@@ -55,10 +58,12 @@ async def receive_webhook(
 
     Returns 200 immediately (Meta requires <5s response).
     Actual processing happens in a background task.
+
+    NOTE: This endpoint requires PostgreSQL and the dispatcher module.
+    For the demo, use POST /whatsapp (Twilio) instead.
     """
     body = await request.json()
 
-    # Extract message data from Meta's nested payload structure
     try:
         entry = body.get("entry", [])
         if not entry:
@@ -73,7 +78,6 @@ async def receive_webhook(
         contacts = value.get("contacts", [])
 
         if not messages:
-            # This might be a status update (delivered, read, etc.) — not a message
             logger.debug("webhook_non_message", payload_type="status_update")
             return {"status": "ok"}
 
@@ -92,18 +96,26 @@ async def receive_webhook(
             sender_name=sender_name,
         )
 
-        # Dispatch processing in background — don't block the 200 response
-        background_tasks.add_task(
-            process_incoming_message,
-            phone=phone,
-            wa_message_id=wa_message_id,
-            msg_type=msg_type,
-            message_data=message,
-            sender_name=sender_name,
-        )
+        # Lazy import — dispatcher needs PostgreSQL which isn't in the demo stack
+        try:
+            from webhooks.dispatcher import process_incoming_message
+
+            background_tasks.add_task(
+                process_incoming_message,
+                phone=phone,
+                wa_message_id=wa_message_id,
+                msg_type=msg_type,
+                message_data=message,
+                sender_name=sender_name,
+            )
+        except ImportError:
+            logger.warning(
+                "meta_dispatcher_unavailable",
+                note="PostgreSQL/SQLModel not installed — use POST /whatsapp instead",
+            )
 
     except Exception as exc:
         logger.error("webhook_parse_error", error=str(exc))
 
-    # Always return 200 to Meta — they will retry on non-2xx
+    # Always return 200 to Meta
     return {"status": "ok"}

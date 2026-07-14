@@ -14,22 +14,21 @@ from __future__ import annotations
 
 from agents.state import PatientState
 from core.logging import get_logger
-from llm.ollama_client import get_fast_llm
+from services.llm import get_fast_llm
 
 logger = get_logger(__name__)
 
-CLASSIFICATION_PROMPT = """You are an intent classifier for a medical AI assistant on WhatsApp.
+CLASSIFICATION_PROMPT = """You are an intent classifier for a medical AI assistant.
 
-Classify the following patient message into exactly ONE category:
+Classify the input message into exactly one of these labels:
+1. "general": Greetings, small talk, asking about doctor availability, asking about clinic timings, or general inquiries (where the user has NOT explicitly asked to book).
+2. "appointment": EXPLICIT or IMPLICIT booking requests (e.g., "book this slot", "schedule an appointment", "I want to see Dr. Sarah", "Yes, I'd like to proceed", "Sounds good", "I'll take the 4 PM one", "Perfect", "Book it"). Do not use this for just asking what doctors are available.
+3. "medicine": Medications, dosage, prescriptions, or refills.
+4. "clinical_question": General medical questions or asking for medical advice WITHOUT asking for an appointment.
 
-- "general" — casual greetings, small talk, general questions, or anything that doesn't fit the other categories
-- "appointment" — scheduling, rescheduling, cancelling appointments, asking about available slots or timings
-- "medicine" — mentions of medications, prescriptions, dosages, drug names, refills, or medicine-related instructions
-- "clinical_question" — medical symptoms, health concerns, diagnosis questions, lab results, treatment queries, follow-up on conditions
+CRITICAL: Output ONLY the single word label. Do not output whitespace, punctuation, quotes, or conversational filler.
 
-Respond with ONLY the category name, nothing else. No explanation, no punctuation.
-
-Patient message: {message}"""
+Message: {message}"""
 
 
 def supervisor_node(state: PatientState) -> dict:

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from agents.state import PatientState
 from core.logging import get_logger
-from llm.ollama_client import get_llm
+from services.llm import get_llm
 
 logger = get_logger(__name__)
 

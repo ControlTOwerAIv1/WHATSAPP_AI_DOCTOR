@@ -33,6 +33,14 @@ class PatientState(TypedDict):
     history: list[dict]
     retrieved_context: Optional[str]
 
+    # ── Appointment flow (FSM) ──────────────────────────────────────
+    appointment_stage: Optional[str]
+    patient_name: Optional[str]
+    patient_condition: Optional[str]
+    name_failures: Optional[int]
+    condition_failures: Optional[int]
+    offered_slots: Optional[list[dict]]
+
     # ── Output ──────────────────────────────────────────────────────
     reply_text: Optional[str]
     reply_audio_url: Optional[str]

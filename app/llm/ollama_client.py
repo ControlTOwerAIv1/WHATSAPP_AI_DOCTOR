@@ -45,15 +45,33 @@ def get_llm() -> ChatOllama:
 
 
 def get_fast_llm() -> ChatOllama:
-    """Get a faster, smaller model for classification tasks.
+    """Get a fast LLM for intent classification using Anthropic Claude.
 
-    Uses the same model but with temperature=0 for deterministic outputs.
-    In production, this could point to a smaller model like phi3:mini.
+    Returns an object with an ``invoke`` method compatible with the existing
+    supervisor code. The underlying model is ``claude-sonnet-4-6`` and runs with
+    deterministic settings.
     """
+    from anthropic import Anthropic
     settings = get_settings()
-    return ChatOllama(
-        model=settings.ollama_model,
-        base_url=settings.ollama_base_url,
-        timeout=settings.ollama_timeout,
-        temperature=0,
-    )
+    client = Anthropic(api_key=settings.anthropic_api_key)
+
+    class ClaudeWrapper:
+        def __init__(self, client):
+            self.client = client
+        def invoke(self, prompt: str):
+            # Use the Claude chat API. No system prompt needed for simple classification.
+            response = self.client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1024,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            # The response content is a list of blocks; take the first text block.
+            text = response.content[0].text if hasattr(response, "content") else str(response)
+            class Resp:
+                def __init__(self, content):
+                    self.content = content
+            return Resp(text)
+
+    return ClaudeWrapper(client)
+
