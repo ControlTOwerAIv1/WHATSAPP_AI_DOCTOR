@@ -21,6 +21,8 @@ const messageStore = {};
 const groupStore = {};
 const contactStore = {};
 const chatStore = {};
+const operatorReads = {};
+const flaggedMessages = {};
 // Maps @lid JIDs to their corresponding @s.whatsapp.net JID and vice-versa.
 // WhatsApp's multi-device protocol uses opaque @lid identifiers internally;
 // we track both directions so resolveContactName() works regardless of format.
@@ -351,7 +353,7 @@ async function resolveAllLidsFromStore() {
   }
 }
 
-function normalizeChat(chat = {}) {
+function normalizeChat(chat = {}, operatorId = null) {
   let phone = null;
   const id = chat.id;
   if (id) {
@@ -406,10 +408,12 @@ function normalizeChat(chat = {}) {
     });
   }
 
+  const finalUnreadCount = operatorId && id ? getUnreadCountForOperator(id, operatorId) : Number(chat.unreadCount || 0);
+
   return {
     ...chat,
     phone: phone || chat.phone || null,
-    unreadCount: Number(chat.unreadCount || 0),
+    unreadCount: finalUnreadCount,
     timestamp: toTimestamp(chat.timestamp),
     lastMsg: chat.lastMsg || '',
     name: currentName,
@@ -450,6 +454,7 @@ function normalizeMessageRecord(msg = {}) {
     resolvedSender = cleanJidToPhone(resolvedSender);
   }
 
+  const flag = flaggedMessages[msg.id];
   return {
     ...msg,
     id: msg.id,
@@ -477,6 +482,11 @@ function normalizeMessageRecord(msg = {}) {
     status: msg.status !== undefined ? msg.status : null,
     edits: msg.edits ? [...msg.edits] : [],
     raw: msg.raw || null,
+    isFlagged: Boolean(flag),
+    flaggedByOperatorId: flag ? flag.flaggedByOperatorId : null,
+    flaggedByOperatorName: flag ? flag.flaggedByOperatorName : null,
+    flaggedNote: flag ? flag.note : null,
+    flaggedAt: flag ? flag.flaggedAt : null,
   };
 }
 
@@ -564,6 +574,40 @@ function loadStore() {
       database.importLegacyStore(STORE_FILE);
       console.log('[Bridge] Migrated legacy store.json into SQLite');
     }
+
+    // Load operator reads
+    try {
+      const reads = database.getAllOperatorReadPointers();
+      for (const row of reads) {
+        if (!operatorReads[row.operator_id]) {
+          operatorReads[row.operator_id] = {};
+        }
+        operatorReads[row.operator_id][row.chat_id] = {
+          messageId: row.last_read_message_id,
+          timestamp: row.last_read_timestamp
+        };
+      }
+    } catch (e) {
+      console.error('[Bridge] Failed to load operator reads:', e.message);
+    }
+
+    // Load flagged messages
+    try {
+      const flags = database.getAllFlaggedMessages();
+      for (const row of flags) {
+        flaggedMessages[row.message_id] = {
+          messageId: row.message_id,
+          jid: row.jid,
+          flaggedByOperatorId: row.flagged_by_operator_id,
+          flaggedByOperatorName: row.flagged_by_operator_name,
+          note: row.note,
+          flaggedAt: row.flagged_at
+        };
+      }
+    } catch (e) {
+      console.error('[Bridge] Failed to load flagged messages:', e.message);
+    }
+
     const state = database.loadState();
     for (const contact of state.contacts) {
       if (contact?.id) {
@@ -603,8 +647,8 @@ function loadStore() {
   }
 }
 
-function sortedChats() {
-  const chats = Object.values(chatStore).map(normalizeChat);
+function sortedChats(operatorId = null) {
+  const chats = Object.values(chatStore).map(chat => normalizeChat(chat, operatorId));
   const filtered = [];
   const seenPhoneJids = new Set();
 
@@ -947,7 +991,11 @@ function addMessageToStore(msg, options = {}) {
 }
 
 function broadcastChats() {
-  io.emit('chats', sortedChats());
+  if (!io) return;
+  for (const socket of io.sockets.sockets.values()) {
+    const opId = socket.handshake?.query?.operatorId || 'default';
+    socket.emit('chats', sortedChats(opId));
+  }
 }
 
 function chatDisplayName(jid) {
@@ -1134,7 +1182,89 @@ function sendLockError(target, result) {
   return payload;
 }
 
+// --- Operator Reads ---
+function setOperatorReadPointer(operatorId, chatId, messageId, timestamp) {
+  if (!operatorId || !chatId) return;
+  if (!operatorReads[operatorId]) {
+    operatorReads[operatorId] = {};
+  }
+  operatorReads[operatorId][chatId] = { messageId, timestamp };
+  database.setOperatorReadPointer(operatorId, chatId, messageId, timestamp);
+}
+
+function getOperatorReadPointer(operatorId, chatId) {
+  if (operatorReads[operatorId] && operatorReads[operatorId][chatId]) {
+    return operatorReads[operatorId][chatId];
+  }
+  return null;
+}
+
+// --- Message Flagging ---
+function flagMessage(messageId, jid, operatorId, operatorName, note, timestamp) {
+  flaggedMessages[messageId] = {
+    messageId,
+    jid,
+    flaggedByOperatorId: operatorId,
+    flaggedByOperatorName: operatorName,
+    note,
+    flaggedAt: timestamp
+  };
+  database.flagMessage(messageId, jid, operatorId, operatorName, note, timestamp);
+}
+
+function unflagMessage(messageId) {
+  delete flaggedMessages[messageId];
+  database.unflagMessage(messageId);
+}
+
+function getFlaggedMessages() {
+  return Object.values(flaggedMessages).sort((a, b) => b.flaggedAt - a.flaggedAt);
+}
+
+function getMessageFlag(messageId) {
+  return flaggedMessages[messageId] || null;
+}
+
+function getUnreadCountForOperator(chatId, operatorId) {
+  const chat = chatStore[chatId];
+  if (!chat) return 0;
+
+  const preferredJid = getPreferredJid(chatId) || chatId;
+  const threadJids = getThreadJids(preferredJid);
+
+  let lastReadTimestamp = -1;
+  let hasPointer = false;
+
+  for (const jid of threadJids) {
+    if (operatorReads[operatorId] && operatorReads[operatorId][jid]) {
+      const ptr = operatorReads[operatorId][jid];
+      if (ptr.timestamp > lastReadTimestamp) {
+        lastReadTimestamp = ptr.timestamp;
+        hasPointer = true;
+      }
+    }
+  }
+
+  if (!hasPointer) {
+    return Number(chat.unreadCount || 0);
+  }
+
+  // Query database for the exact count
+  let totalUnread = 0;
+  for (const jid of threadJids) {
+    totalUnread += database.getUnreadCountForOperator(jid, lastReadTimestamp);
+  }
+  return totalUnread;
+}
+
 module.exports = {
+  setOperatorReadPointer,
+  getOperatorReadPointer,
+  flagMessage,
+  unflagMessage,
+  getFlaggedMessages,
+  getMessageFlag,
+  getUnreadCountForOperator,
   init,
   setIo,
   setDatabase,

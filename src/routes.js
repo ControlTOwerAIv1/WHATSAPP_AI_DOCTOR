@@ -1050,7 +1050,8 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     socket.emit('status', { status: whatsapp.getStatus(), connectorOperatorId, connectorOperatorName, myJid: sock?.user?.id || null });
     if (whatsapp.getQrCodeData()) socket.emit('qr', whatsapp.getQrCodeData());
     socket.emit('groups', Object.values(stores.groupStore));
-    socket.emit('chats', stores.sortedChats());
+    socket.emit('chats', stores.sortedChats(opId));
+    socket.emit('flagged_list', stores.getFlaggedMessages());
     socket.emit('sync_status', stores.getSyncState());
 
     socket.on('set_operator_name', ({ name }) => {
@@ -1060,7 +1061,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
         operators.set(socket.id, op);
       }
       broadcastOperators();
-      socket.emit('chats', stores.sortedChats());
+      socket.emit('chats', stores.sortedChats(op ? op.id : opId));
     });
 
     socket.on('linking_whatsapp', ({ operatorId, operatorName }) => {
@@ -1093,6 +1094,15 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       const mappedAltJid = preferredJid.endsWith('@lid') ? stores.lidToJid[preferredJid] : stores.jidToLid[preferredJid];
       if (mappedAltJid) targetJids.push(mappedAltJid);
 
+      // Update operator's read pointer to latest message in this thread
+      const latestMsg = stores.getMessagesForJid(jid).slice(-1)[0];
+      const latestTimestamp = latestMsg ? stores.toTimestamp(latestMsg.timestamp) : Math.floor(Date.now() / 1000);
+      const latestId = latestMsg ? latestMsg.id : null;
+      
+      for (const tJid of targetJids) {
+        stores.setOperatorReadPointer(opId, tJid, latestId, latestTimestamp);
+      }
+
       let chatUpdated = false;
       for (const tJid of targetJids) {
         const chat = stores.chatStore[tJid];
@@ -1105,12 +1115,14 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       if (chatUpdated) {
         stores.broadcastChats();
         stores.saveStore();
+      } else {
+        stores.broadcastChats();
       }
 
       if (jid.endsWith('@lid') && !stores.lidToJid[jid]) {
         stores.resolveLidToPhoneAsync(jid).then((pn) => {
           if (pn) {
-            io.emit('chats', stores.sortedChats());
+            stores.broadcastChats();
           }
         });
       }
@@ -1147,8 +1159,107 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
         messages: sliced,
         hasMore: msgs.length > limit,
         total: msgs.length,
-        chat: stores.normalizeChat(stores.chatStore[jid]) || null,
+        chat: stores.normalizeChat(stores.chatStore[jid], opId) || null,
       });
+    });
+
+    socket.on('set_read_pointer', ({ jid, messageId, timestamp }) => {
+      const preferredJid = stores.getPreferredJid(jid) || jid;
+      const targetJids = [preferredJid];
+      const mappedAltJid = preferredJid.endsWith('@lid') ? stores.lidToJid[preferredJid] : stores.jidToLid[preferredJid];
+      if (mappedAltJid) targetJids.push(mappedAltJid);
+
+      for (const tJid of targetJids) {
+        stores.setOperatorReadPointer(opId, tJid, messageId, timestamp);
+      }
+      stores.broadcastChats();
+    });
+
+    socket.on('mark_chat_unread', ({ jid, scope }) => {
+      const preferredJid = stores.getPreferredJid(jid) || jid;
+      const targetJids = [preferredJid];
+      const mappedAltJid = preferredJid.endsWith('@lid') ? stores.lidToJid[preferredJid] : stores.jidToLid[preferredJid];
+      if (mappedAltJid) targetJids.push(mappedAltJid);
+
+      if (scope === 'others' || scope === 'all') {
+        for (const tJid of targetJids) {
+          if (scope === 'others') {
+            database.db.prepare('DELETE FROM operator_chat_reads WHERE chat_id = ? AND operator_id != ?').run(tJid, opId);
+            for (const otherOpId of Object.keys(stores.operatorReads || {})) {
+              if (otherOpId !== opId && stores.operatorReads[otherOpId]) {
+                delete stores.operatorReads[otherOpId][tJid];
+              }
+            }
+          } else {
+            database.db.prepare('DELETE FROM operator_chat_reads WHERE chat_id = ?').run(tJid);
+            for (const otherOpId of Object.keys(stores.operatorReads || {})) {
+              if (stores.operatorReads[otherOpId]) {
+                delete stores.operatorReads[otherOpId][tJid];
+              }
+            }
+          }
+          
+          const chat = stores.chatStore[tJid];
+          if (chat) {
+            chat.unreadCount = 1;
+            database.upsertChat(chat);
+          }
+        }
+      } else if (scope === 'me') {
+        for (const tJid of targetJids) {
+          database.db.prepare('DELETE FROM operator_chat_reads WHERE chat_id = ? AND operator_id = ?').run(tJid, opId);
+          if (stores.operatorReads[opId]) {
+            delete stores.operatorReads[opId][tJid];
+          }
+          const chat = stores.chatStore[tJid];
+          if (chat) {
+            chat.unreadCount = 1;
+            database.upsertChat(chat);
+          }
+        }
+      }
+      
+      stores.broadcastChats();
+      stores.saveStore();
+    });
+
+    socket.on('flag_message', ({ messageId, jid, note }) => {
+      const timestamp = Math.floor(Date.now() / 1000);
+      stores.flagMessage(messageId, jid, opId, opName, note, timestamp);
+      
+      const flag = stores.getMessageFlag(messageId);
+      io.emit('message_flagged', { messageId, jid, flag });
+      
+      const msg = stores.findMessageInThread(jid, messageId);
+      if (msg) {
+        msg.isFlagged = true;
+        msg.flaggedByOperatorId = opId;
+        msg.flaggedByOperatorName = opName;
+        msg.flaggedNote = note;
+        msg.flaggedAt = timestamp;
+      }
+      
+      io.emit('flagged_list_updated', stores.getFlaggedMessages());
+    });
+
+    socket.on('unflag_message', ({ messageId, jid }) => {
+      stores.unflagMessage(messageId);
+      io.emit('message_unflagged', { messageId, jid });
+      
+      const msg = stores.findMessageInThread(jid, messageId);
+      if (msg) {
+        msg.isFlagged = false;
+        msg.flaggedByOperatorId = null;
+        msg.flaggedByOperatorName = null;
+        msg.flaggedNote = null;
+        msg.flaggedAt = null;
+      }
+      
+      io.emit('flagged_list_updated', stores.getFlaggedMessages());
+    });
+
+    socket.on('get_flagged_messages', () => {
+      socket.emit('flagged_list', stores.getFlaggedMessages());
     });
 
     socket.on('send_message', async (data) => {

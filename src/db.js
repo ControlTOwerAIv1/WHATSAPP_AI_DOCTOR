@@ -61,6 +61,21 @@ class RelayDatabase {
         key TEXT PRIMARY KEY,
         value TEXT
       );
+      CREATE TABLE IF NOT EXISTS operator_chat_reads (
+        operator_id TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
+        last_read_message_id TEXT,
+        last_read_timestamp INTEGER DEFAULT 0,
+        PRIMARY KEY (operator_id, chat_id)
+      );
+      CREATE TABLE IF NOT EXISTS flagged_messages (
+        message_id TEXT PRIMARY KEY,
+        jid TEXT NOT NULL,
+        flagged_by_operator_id TEXT NOT NULL,
+        flagged_by_operator_name TEXT NOT NULL,
+        note TEXT,
+        flagged_at INTEGER NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_messages_jid_timestamp
       ON messages(jid, timestamp, id);
     `);
@@ -258,6 +273,84 @@ class RelayDatabase {
       .filter((msg) => msg.id && msg.jid);
     this.inTransaction(contacts, chats, messages);
     return true;
+  }
+
+  // --- Operator Chat Reads ---
+  setOperatorReadPointer(operatorId, chatId, messageId, timestamp) {
+    try {
+      this.db.prepare(`
+        INSERT INTO operator_chat_reads (operator_id, chat_id, last_read_message_id, last_read_timestamp)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(operator_id, chat_id) DO UPDATE SET
+          last_read_message_id = excluded.last_read_message_id,
+          last_read_timestamp = excluded.last_read_timestamp
+      `).run(operatorId, chatId, messageId, timestamp);
+    } catch (e) {
+      console.error('[Database] setOperatorReadPointer error:', e.message);
+    }
+  }
+
+  getOperatorReadPointer(operatorId, chatId) {
+    try {
+      const row = this.db.prepare('SELECT last_read_message_id, last_read_timestamp FROM operator_chat_reads WHERE operator_id = ? AND chat_id = ?').get(operatorId, chatId);
+      return row ? { messageId: row.last_read_message_id, timestamp: row.last_read_timestamp } : null;
+    } catch (e) {
+      console.error('[Database] getOperatorReadPointer error:', e.message);
+      return null;
+    }
+  }
+
+  getUnreadCountForOperator(jid, lastReadTimestamp) {
+    try {
+      const row = this.db.prepare(`
+        SELECT COUNT(*) AS count FROM messages 
+        WHERE jid = ? AND from_me = 0 AND deleted = 0 AND timestamp > ?
+      `).get(jid, lastReadTimestamp);
+      return row ? row.count : 0;
+    } catch (e) {
+      console.error('[Database] getUnreadCountForOperator error:', e.message);
+      return 0;
+    }
+  }
+
+  getAllOperatorReadPointers() {
+    try {
+      return this.db.prepare('SELECT operator_id, chat_id, last_read_message_id, last_read_timestamp FROM operator_chat_reads').all();
+    } catch (e) {
+      console.error('[Database] getAllOperatorReadPointers error:', e.message);
+      return [];
+    }
+  }
+
+  // --- Flagged Messages ---
+  flagMessage(messageId, jid, operatorId, operatorName, note, timestamp) {
+    try {
+      this.db.prepare(`
+        INSERT INTO flagged_messages (message_id, jid, flagged_by_operator_id, flagged_by_operator_name, note, flagged_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(message_id) DO UPDATE SET
+          note = excluded.note
+      `).run(messageId, jid, operatorId, operatorName, note || null, timestamp);
+    } catch (e) {
+      console.error('[Database] flagMessage error:', e.message);
+    }
+  }
+
+  unflagMessage(messageId) {
+    try {
+      this.db.prepare('DELETE FROM flagged_messages WHERE message_id = ?').run(messageId);
+    } catch (e) {
+      console.error('[Database] unflagMessage error:', e.message);
+    }
+  }
+
+  getAllFlaggedMessages() {
+    try {
+      return this.db.prepare('SELECT message_id, jid, flagged_by_operator_id, flagged_by_operator_name, note, flagged_at FROM flagged_messages ORDER BY flagged_at DESC').all();
+    } catch (e) {
+      console.error('[Database] getAllFlaggedMessages error:', e.message);
+      return [];
+    }
   }
 }
 

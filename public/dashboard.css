@@ -2791,3 +2791,189 @@
       opacity: 0.6;
     }
 
+    /* Custom Context Menu */
+    .context-menu {
+      position: fixed;
+      z-index: 10000;
+      background: var(--surface2, #1f2c34);
+      border: 1px solid var(--border, #374248);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+      border-radius: 8px;
+      padding: 5px 0;
+      min-width: 160px;
+      backdrop-filter: blur(10px);
+      transition: opacity 0.1s ease;
+    }
+
+    .context-menu.hidden {
+      display: none;
+    }
+
+    .context-menu-item {
+      padding: 8px 16px;
+      font-size: 13px;
+      color: var(--text, #d1d7db);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      transition: background 0.15s ease;
+    }
+
+    .context-menu-item:hover {
+      background: var(--surface, #2a3942);
+      color: var(--accent, #00a884);
+    }
+
+    .context-menu-divider {
+      height: 1px;
+      background: var(--border, #374248);
+      margin: 4px 0;
+    }
+
+    /* Flagged Message Styling */
+    .message-row.flagged-msg .msg-bubble {
+      border: 1px solid rgba(239, 68, 68, 0.5) !important;
+      background: rgba(239, 68, 68, 0.05) !important;
+    }
+
+    .msg-flag-banner {
+      font-size: 11px;
+      font-weight: 600;
+      color: #ef4444;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-bottom: 4px;
+      border-bottom: 1px dashed rgba(239, 68, 68, 0.2);
+      padding-bottom: 3px;
+    }
+
+    .msg-flag-note {
+      font-weight: normal;
+      font-style: italic;
+      color: var(--text, #d1d7db);
+      opacity: 0.8;
+      margin-left: 2px;
+    }
+
+    /* Flagged Tab in Right Panel */
+    .flagged-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 16px;
+      overflow-y: auto;
+      max-height: calc(100vh - 200px);
+    }
+
+    .flagged-card {
+      background: var(--surface2, #1f2c34);
+      border: 1px solid var(--border, #374248);
+      border-left: 4px solid #ef4444;
+      border-radius: 8px;
+      padding: 12px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      transition: transform 0.15s ease, background-color 0.15s ease;
+    }
+
+    .flagged-card:hover {
+      background: var(--surface, #2a3942);
+      transform: translateY(-2px);
+    }
+
+    .flagged-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: var(--muted, #8696a0);
+    }
+
+    .flagged-card-chat-name {
+      font-weight: 700;
+      color: var(--accent, #00a884);
+    }
+
+    .flagged-card-flagged-by {
+      font-style: italic;
+    }
+
+    .flagged-card-body {
+      font-size: 13px;
+      color: var(--text, #d1d7db);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .flagged-card-note {
+      font-size: 12px;
+      font-style: italic;
+      color: var(--text, #d1d7db);
+      background: rgba(0, 0, 0, 0.2);
+      padding: 4px 8px;
+      border-radius: 4px;
+      margin-top: 2px;
+    }
+
+    .flagged-card-resolve-btn {
+      align-self: flex-end;
+      background: transparent;
+      border: 1px solid #ef4444;
+      color: #ef4444;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: all 0.15s ease;
+    }
+
+    .flagged-card-resolve-btn:hover {
+      background: #ef4444;
+      color: #fff;
+    }
+
+    .flagged-empty {
+      padding: 32px 16px;
+      text-align: center;
+      color: var(--muted, #8696a0);
+      font-size: 13px;
+    }
+
+    /* Unread Divider inside Chat View */
+    .unread-divider {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 16px 0;
+      position: relative;
+    }
+
+    .unread-divider::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: rgba(0, 168, 132, 0.2);
+      z-index: 1;
+    }
+
+    .unread-divider-text {
+      background: var(--surface2, #1f2c34);
+      color: var(--accent, #00a884);
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      border: 1px solid rgba(0, 168, 132, 0.2);
+      position: relative;
+      z-index: 2;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+    }
+

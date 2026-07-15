@@ -333,6 +333,7 @@
       </div>
       <div class="panel-tabs">
         <div class="panel-tab active" onclick="switchTab('operators',this)">Operators</div>
+        <div class="panel-tab" onclick="switchTab('flagged',this)" id="flaggedTab">Flagged</div>
         <div class="panel-tab" onclick="switchTab('create',this)" id="createTab">Create Group</div>
       </div>
       <div class="panel-content" id="panelContent"></div>
@@ -352,6 +353,9 @@
       </div>
     </div>
   </div>
+
+  <!-- Custom Context Menu -->
+  <div id="customContextMenu" class="context-menu hidden"></div>
 
   <!-- Hidden file inputs -->
   <input type="file" id="fileInputImage" accept="image/*,image/gif" onchange="handleFileSelected('image',this)" multiple>

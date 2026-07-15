@@ -6,6 +6,10 @@
     let currentTab = 'operators';
     let operatorId = localStorage.getItem('whatsapp_echo_operator_id') || '';
     let operatorName = localStorage.getItem('whatsapp_echo_operator_name') || '';
+    let flaggedList = [];
+    let unreadObserver = null;
+    let pendingScrollToMessageId = null;
+    let pendingScrollToMessageTimestamp = null;
     let connectorOperatorId = null;
     let connectorOperatorName = null;
     let pendingMediaList = [];
@@ -901,55 +905,81 @@
     }
 
     async function scrollToOrLoadMessage(messageId, timestamp) {
+      console.log('[FlagJump] scrollToOrLoadMessage start. messageId=', messageId, 'activeChat?.id=', activeChat?.id, 'rowsInDom=', document.querySelectorAll('.messages-area .message-row').length);
       let el = document.getElementById('msg-' + messageId);
       if (el) {
+        const expected = flaggedList.find(i => i.messageId === messageId);
+        console.log('[FlagJump] message already in DOM, scrolling directly');
+        console.log('[FlagJump] EXPECTED (from flaggedList):', {
+          jid: expected?.jid,
+          messageId: expected?.messageId,
+          note: expected?.note,
+          flaggedAt: expected?.flaggedAt,
+        });
+        console.log('[FlagJump] ACTUAL row found:', {
+          id: el.id,
+          timestamp: el.dataset.timestamp,
+          fromMe: el.dataset.fromMe,
+          content: el.dataset.content,
+          text: el.querySelector('.msg-text')?.textContent,
+          sender: el.querySelector('.msg-sender')?.textContent,
+        });
         scrollToMessage(messageId);
         return;
       }
-      
+
       // Not in DOM. We need to load older messages.
       showToast('Loading older messages to locate match...', 'info');
-      
+
       let attempts = 0;
       const maxAttempts = 10;
       while (!el && attempts < maxAttempts) {
         const firstMsgRow = document.querySelector('.messages-area .message-row');
         const before = firstMsgRow?.dataset.timestamp || null;
-        if (!before) break;
-        
+        console.log('[FlagJump] loop attempt', attempts, 'before=', before, 'firstMsgRow exists=', !!firstMsgRow);
+        if (!before) {
+          console.log('[FlagJump] BREAKING: no "before" cursor available (empty messages area or missing timestamp)');
+          break;
+        }
+
         try {
           let url = `${bridgeUrl}/api/messages?jid=${encodeURIComponent(activeChat.id)}&limit=50`;
           if (before) url += `&before=${encodeURIComponent(before)}`;
+          console.log('[FlagJump] fetching', url);
           const res = await fetch(url);
           const data = await res.json();
           const msgs = data.messages || data;
+          console.log('[FlagJump] fetch result: got', msgs.length, 'messages, hasMore=', data.hasMore);
           if (!msgs.length) {
             chatHasMore[activeChat.id] = false;
             document.getElementById('loadMoreIndicator').style.display = 'none';
+            console.log('[FlagJump] BREAKING: server returned 0 older messages');
             break;
           }
           chatHasMore[activeChat.id] = data.hasMore !== false;
           document.getElementById('loadMoreIndicator').style.display = chatHasMore[activeChat.id] ? 'block' : 'none';
-          
+
           // Prepend messages in reverse order to maintain correct scroll position and sequence
           msgs.reverse().forEach(m => {
             appendMessage(normalizeMessage(m), false, true);
           });
-          
+
           el = document.getElementById('msg-' + messageId);
           if (el) {
+            console.log('[FlagJump] FOUND message after loading older batch');
             break;
           }
         } catch (e) {
-          console.error(e);
+          console.error('[FlagJump] fetch error', e);
           break;
         }
         attempts++;
       }
-      
+
       if (el) {
         scrollToMessage(messageId);
       } else {
+        console.log('[FlagJump] GIVING UP after', attempts, 'attempts - message not found');
         showToast('Could not find the message in history', 'error');
       }
     }
@@ -1148,7 +1178,7 @@
       return `hsl(${hue}, 85%, 65%)`;
     }
 
-    function appendMessage(msg, scroll = true, prepend = false) {
+    function appendMessage(msg, scroll = true, prepend = false, isUnreadTarget = false) {
       const area = document.getElementById('messagesArea');
       // Check for duplicate
       if (document.getElementById('msg-' + msg.id)) return;
@@ -1166,6 +1196,13 @@
       const isGroup = activeChat?.type === 'group' || activeChat?.type === 'community';
       if (isGroup) {
         row.classList.add('group-msg');
+      }
+
+      if (isUnreadTarget) {
+        row.classList.add('unread-target');
+      }
+      if (msg.isFlagged) {
+        row.classList.add('flagged-msg');
       }
 
       row.dataset.timestamp = msg.timestamp || '';
@@ -1224,7 +1261,16 @@
       if (msg.deleted) {
         contentHtml = '<div class="msg-deleted">This message was deleted</div>';
       } else {
-        contentHtml = buildQuotedPreviewHtml(msg) + buildMediaContent(msg);
+        let flagBanner = '';
+        if (msg.isFlagged) {
+          flagBanner = `
+            <div class="msg-flag-banner">
+              <span>🚩 Flagged by ${msg.flaggedByOperatorName || 'Team'}</span>
+              ${msg.flaggedNote ? `<span class="msg-flag-note">("${msg.flaggedNote}")</span>` : ''}
+            </div>
+          `;
+        }
+        contentHtml = flagBanner + buildQuotedPreviewHtml(msg) + buildMediaContent(msg);
       }
 
       const allowReply = !msg.deleted;
@@ -1286,17 +1332,20 @@
         msgAvatarContent = getAvatarContent('community', initial);
       }
 
+      const resolveFlagHtml = msg.isFlagged ? `<button class="btn-ghost-sm" style="color:var(--danger)" onclick="resolveFlagDirect('${msg.id}', '${activeChat?.id}')">🚩 Resolve</button>` : '';
+
       row.innerHTML = `
     <div class="msg-avatar ${msgAvatarType}">${msgAvatarContent}</div>
     <div class="msg-bubble">
       ${showSender ? `<div class="msg-sender" title="${tooltipText}" style="color: ${senderColor}">${displaySenderName}</div>` : ''}
       ${contentHtml}
       ${msg.deleted ? '' : `<div class="msg-time">${timeStr}${editedMark}${statusHtml}</div>`}
-      ${!msg.deleted && (allowReply || allowEdit || allowDelete) ? `
+      ${!msg.deleted && (allowReply || allowEdit || allowDelete || msg.isFlagged) ? `
         <div class="msg-actions">
           ${allowReply ? `<button class="btn-ghost-sm" onclick="startReply('${msg.id}')">↩ Reply</button>` : ''}
           ${allowEdit ? `<button class="btn-ghost-sm" onclick="startEdit('${msg.id}')">✎ Edit</button>` : ''}
           ${allowDelete ? `<button class="btn-ghost-sm" style="color:var(--danger)" onclick="startDelete('${msg.id}')">🗑 Delete</button>` : ''}
+          ${resolveFlagHtml}
         </div>` : ''}
     </div>
   `;
@@ -1443,7 +1492,11 @@
 
     // ─── Chat Messages Loaded ────────────────────────────────────────────────────
     function onChatMessagesLoaded(data) {
-      if (!activeChat || data.jid !== activeChat.id) return;
+      console.log('[FlagJump] onChatMessagesLoaded fired. data.jid=', data.jid, 'activeChat?.id=', activeChat?.id, 'pendingScrollToMessageId=', pendingScrollToMessageId);
+      if (!activeChat || data.jid !== activeChat.id) {
+        console.log('[FlagJump] onChatMessagesLoaded GUARD BLOCKED (jid mismatch or no activeChat) - messages NOT rendered for this response');
+        return;
+      }
       if (data.chat) {
         upsertChatRecord(data.chat);
         syncActiveChat();
@@ -1456,12 +1509,67 @@
       clearMessages();
       document.getElementById('loadMoreIndicator').style.display = data.hasMore ? 'block' : 'none';
 
-      (data.messages || []).forEach(m => {
-        appendMessage(normalizeMessage(m), false);
+      // Setup unread count logic
+      const messages = data.messages || [];
+      const incomingIndices = [];
+      messages.forEach((m, idx) => {
+        if (!m.fromMe && !m.outgoing && !m.deleted) {
+          incomingIndices.push(idx);
+        }
+      });
+      
+      const unreadCount = Number(data.chat?.unreadCount || 0);
+      const unreadMsgIds = new Set();
+      let firstUnreadIdx = -1;
+      
+      if (unreadCount > 0 && incomingIndices.length > 0) {
+        const startIndex = Math.max(0, incomingIndices.length - unreadCount);
+        const unreadIndices = incomingIndices.slice(startIndex);
+        unreadIndices.forEach(idx => {
+          unreadMsgIds.add(messages[idx].id);
+        });
+        if (unreadIndices.length > 0) {
+          firstUnreadIdx = unreadIndices[0];
+        }
+      }
+
+      initScrollObserver();
+
+      messages.forEach((m, idx) => {
+        const isUnread = unreadMsgIds.has(m.id);
+        
+        // Append unread divider before first unread message
+        if (idx === firstUnreadIdx) {
+          const area = document.getElementById('messagesArea');
+          const divider = document.createElement('div');
+          divider.className = 'unread-divider';
+          divider.innerHTML = `<span class="unread-divider-text">Unread Messages</span>`;
+          area.appendChild(divider);
+        }
+
+        appendMessage(normalizeMessage(m), false, false, isUnread);
+
+        // Observe the appended row if it is unread
+        if (isUnread && unreadObserver) {
+          const row = document.getElementById('msg-' + m.id);
+          if (row) unreadObserver.observe(row);
+        }
       });
 
       const area = document.getElementById('messagesArea');
-      area.scrollTop = area.scrollHeight;
+      
+      // If there are unread messages, scroll to the unread divider or the first unread message
+      if (firstUnreadIdx >= 0 && messages[firstUnreadIdx]) {
+        const targetRow = document.getElementById('msg-' + messages[firstUnreadIdx].id);
+        if (targetRow) {
+          targetRow.scrollIntoView({ behavior: 'auto', block: 'center' });
+        } else {
+          area.scrollTop = area.scrollHeight;
+        }
+      } else {
+        area.scrollTop = area.scrollHeight;
+      }
+      
       document.getElementById('statMessages').textContent = data.total;
       // Update chat list preview
       if (data.messages.length) {
@@ -1471,6 +1579,17 @@
           existing.lastMsg = last.content || '';
           existing.timestamp = last.timestamp;
         }
+      }
+
+      // Handle pending scroll-to message (from clicking flagged list)
+      if (pendingScrollToMessageId) {
+        const targetId = pendingScrollToMessageId;
+        const targetTimestamp = pendingScrollToMessageTimestamp;
+        pendingScrollToMessageId = null;
+        pendingScrollToMessageTimestamp = null;
+        setTimeout(() => {
+          scrollToOrLoadMessage(targetId, targetTimestamp);
+        }, 100);
       }
     }
 
@@ -1985,6 +2104,37 @@
       </div>
       <button class="btn btn-primary" style="width:100%" onclick="createGroup()">Create Group</button>`;
       }
+
+      else if (currentTab === 'flagged') {
+        if (flaggedList.length === 0) {
+          c.innerHTML = '<div class="flagged-empty">🚩 No flagged messages for attention</div>';
+        } else {
+          c.innerHTML = `
+            <div style="margin-bottom:12px"><div class="form-label">Flagged Messages (${flaggedList.length})</div></div>
+            <div class="flagged-list">
+              ${flaggedList.map(item => {
+                const dateStr = formatDate(item.flaggedAt * 1000);
+                const safeMsgId = item.messageId.replace(/'/g, "\\'");
+                const safeJid = item.jid.replace(/'/g, "\\'");
+                const noteHtml = item.note ? `<div class="flagged-card-note">"${item.note}"</div>` : '';
+                const chatName = cleanJid(item.jid);
+                
+                return `
+                  <div class="flagged-card" onclick="jumpToFlaggedMessage('${safeJid}', '${safeMsgId}', ${item.flaggedAt})">
+                    <div class="flagged-card-header">
+                      <span class="flagged-card-chat-name">${chatName}</span>
+                      <span class="flagged-card-flagged-by">by ${item.flaggedByOperatorName || 'unknown'}</span>
+                    </div>
+                    <div class="flagged-card-body">Message ID: ${item.messageId.slice(0, 8)}...</div>
+                    ${noteHtml}
+                    <button class="flagged-card-resolve-btn" onclick="event.stopPropagation(); resolveFlagDirect('${safeMsgId}', '${safeJid}')">Resolve</button>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          `;
+        }
+      }
     }
 
     function openChatFromPanel(chat) {
@@ -2345,7 +2495,13 @@
         }
 
         if (isActiveChatJid(msg.from) || isActiveChatJid(msg.jid)) {
-          appendMessage(normalizeMessage(msg));
+          const outgoing = msg.fromMe || msg.outgoing || false;
+          const isUnread = !outgoing;
+          appendMessage(normalizeMessage(msg), true, false, isUnread);
+          if (isUnread && unreadObserver) {
+            const row = document.getElementById('msg-' + msg.id);
+            if (row) unreadObserver.observe(row);
+          }
         }
 
         // Update chat list preview
@@ -2364,6 +2520,47 @@
       });
 
       socket.on('chat_messages', onChatMessagesLoaded);
+
+      socket.on('message_flagged', ({ messageId, jid, flag }) => {
+        if (isActiveChatJid(jid)) {
+          const row = document.getElementById('msg-' + messageId);
+          if (row) {
+            row.classList.add('flagged-msg');
+            const bubble = row.querySelector('.msg-bubble');
+            if (bubble) {
+              if (!bubble.querySelector('.msg-flag-banner')) {
+                const banner = document.createElement('div');
+                banner.className = 'msg-flag-banner';
+                banner.innerHTML = `<span>🚩 Flagged by ${flag.flaggedByOperatorName || 'Team'}</span>${flag.note ? `<span class="msg-flag-note">("${flag.note}")</span>` : ''}`;
+                bubble.insertBefore(banner, bubble.firstChild);
+              }
+            }
+          }
+        }
+        socket.emit('get_flagged_messages');
+      });
+
+      socket.on('message_unflagged', ({ messageId, jid }) => {
+        if (isActiveChatJid(jid)) {
+          const row = document.getElementById('msg-' + messageId);
+          if (row) {
+            row.classList.remove('flagged-msg');
+            const banner = row.querySelector('.msg-flag-banner');
+            if (banner) banner.remove();
+          }
+        }
+        socket.emit('get_flagged_messages');
+      });
+
+      socket.on('flagged_list', (list) => {
+        flaggedList = list || [];
+        if (currentTab === 'flagged') renderPanel();
+      });
+
+      socket.on('flagged_list_updated', (list) => {
+        flaggedList = list || [];
+        if (currentTab === 'flagged') renderPanel();
+      });
 
       socket.on('message_ack', ({ clientTempId, serverId, timestamp }) => {
         if (clientTempId && sentTempIds.has(clientTempId)) {
@@ -3141,11 +3338,216 @@
       }
     }
 
+    function resolveFlagDirect(messageId, jid) {
+      if (socket?.connected) {
+        socket.emit('unflag_message', { messageId, jid });
+        showToast('Resolving flagged message...', 'info');
+      }
+    }
+    window.resolveFlagDirect = resolveFlagDirect;
+
+    function flagMessagePrompt(messageId, jid) {
+      const note = prompt('Add a quick flag note (optional, e.g. "needs supervisor"):');
+      if (note === null) return;
+      if (socket?.connected) {
+        socket.emit('flag_message', { messageId, jid, note });
+        showToast('Flagging message...', 'info');
+      }
+    }
+    window.flagMessagePrompt = flagMessagePrompt;
+
+    function markChatUnreadDirect(jid, scope) {
+      if (socket?.connected) {
+        socket.emit('mark_chat_unread', { jid, scope });
+        showToast(`Marked chat unread for ${scope === 'me' ? 'you' : scope === 'others' ? 'others' : 'everyone'}.`);
+      }
+    }
+    window.markChatUnreadDirect = markChatUnreadDirect;
+
+    function jumpToFlaggedMessage(jid, messageId, timestamp) {
+      console.log('[FlagJump] jumpToFlaggedMessage called. jid=', jid, 'messageId=', messageId, 'activeChat?.id=', activeChat?.id, 'sameChat=', activeChat && activeChat.id === jid);
+      if (activeChat && activeChat.id === jid) {
+        scrollToOrLoadMessage(messageId, timestamp);
+      } else {
+        pendingScrollToMessageId = messageId;
+        pendingScrollToMessageTimestamp = timestamp;
+        openChatById(jid, '');
+      }
+    }
+    window.jumpToFlaggedMessage = jumpToFlaggedMessage;
+
+    function initScrollObserver() {
+      if (unreadObserver) {
+        unreadObserver.disconnect();
+      }
+      
+      const scrollArea = document.getElementById('messagesArea');
+      if (!scrollArea) return;
+      
+      unreadObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            const row = entry.target;
+            row.classList.remove('unread-target');
+            unreadObserver.unobserve(row);
+            
+            const msgId = row.id.replace('msg-', '');
+            const timestamp = Number(row.dataset.timestamp) || 0;
+            if (socket?.connected && activeChat) {
+              socket.emit('set_read_pointer', {
+                jid: activeChat.id,
+                messageId: msgId,
+                timestamp: timestamp
+              });
+            }
+          }
+        });
+      }, {
+        root: scrollArea,
+        threshold: 0.1
+      });
+    }
+
+    function triggerDownload(url, fileName) {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName || 'download';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    async function downloadFromContext(messageId, jid) {
+      const row = document.getElementById('msg-' + messageId);
+      if (!row) return;
+
+      const mediaType = row.dataset.mediaType;
+      if (!mediaType || mediaType === 'text' || mediaType === 'location') return;
+
+      try {
+        showToast('Downloading media...', 'info', 3000);
+        const response = await fetch(`${bridgeUrl}/api/messages/${encodeURIComponent(jid)}/${encodeURIComponent(messageId)}/download-media`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+
+        if (response.status === 410) {
+          showToast('Media is no longer available on WhatsApp servers', 'error');
+          return;
+        }
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.error || 'Failed to download media');
+        }
+
+        const data = await response.json();
+        if (data.success && data.mediaUrl) {
+          const absoluteUrl = data.mediaUrl.startsWith('http') ? data.mediaUrl : `${bridgeUrl}${data.mediaUrl}`;
+          triggerDownload(absoluteUrl, data.fileName || 'download');
+          showToast('Download started', 'success', 2000);
+        }
+      } catch (e) {
+        console.error(e);
+        showToast(e.message, 'error');
+      }
+    }
+
+    function setupCustomContextMenus() {
+      const menu = document.getElementById('customContextMenu');
+      if (!menu) return;
+      
+      const messagesArea = document.getElementById('messagesArea');
+      if (messagesArea) {
+        messagesArea.addEventListener('contextmenu', (e) => {
+          const row = e.target.closest('.message-row');
+          if (!row) return;
+          
+          e.preventDefault();
+          const messageId = row.id.replace('msg-', '');
+          const jid = activeChat ? activeChat.id : '';
+          const isFlagged = row.classList.contains('flagged-msg');
+          
+          let menuHtml = '';
+          if (isFlagged) {
+            menuHtml += `<div class="context-menu-item" onclick="resolveFlagDirect('${messageId}', '${jid}')">🚩 Resolve Flag</div>`;
+          } else {
+            menuHtml += `<div class="context-menu-item" onclick="flagMessagePrompt('${messageId}', '${jid}')">🚩 Flag for Team</div>`;
+          }
+          
+          menuHtml += `<div class="context-menu-divider"></div>`;
+          
+          const fromMe = row.dataset.fromMe === '1';
+          const deleted = row.dataset.deleted === '1';
+          const mediaType = row.dataset.mediaType || 'text';
+          const timestamp = Number(row.dataset.timestamp) || 0;
+          
+          if (!deleted) {
+            menuHtml += `<div class="context-menu-item" onclick="startReply('${messageId}')">↩ Reply</div>`;
+
+            const downloadableTypes = ['image', 'video', 'audio', 'voice', 'document', 'sticker'];
+            if (downloadableTypes.includes(mediaType)) {
+              menuHtml += `<div class="context-menu-item" onclick="downloadFromContext('${messageId}', '${jid}')">📥 Download</div>`;
+            }
+            
+            const ageSec = Math.floor(Date.now() / 1000) - timestamp;
+            if (fromMe && mediaType === 'text' && ageSec <= EDIT_WINDOW_SECONDS) {
+              menuHtml += `<div class="context-menu-item" onclick="startEdit('${messageId}')">✎ Edit</div>`;
+            }
+            if (fromMe && ageSec <= DELETE_FOR_EVERYONE_WINDOW_SECONDS) {
+              menuHtml += `<div class="context-menu-item" style="color:var(--danger)" onclick="startDelete('${messageId}')">🗑 Delete</div>`;
+            }
+          }
+          
+          menu.innerHTML = menuHtml;
+          menu.style.left = e.clientX + 'px';
+          menu.style.top = e.clientY + 'px';
+          menu.classList.remove('hidden');
+        });
+      }
+      
+      const chatList = document.getElementById('chatList');
+      if (chatList) {
+        chatList.addEventListener('contextmenu', (e) => {
+          const chatItem = e.target.closest('.chat-item');
+          if (!chatItem) return;
+          
+          e.preventDefault();
+          const jid = chatItem.getAttribute('data-jid');
+          
+          let menuHtml = `
+            <div class="context-menu-item" onclick="markChatUnreadDirect('${jid}', 'me')">🔵 Mark as Unread (Me)</div>
+            <div class="context-menu-item" onclick="markChatUnreadDirect('${jid}', 'others')">👥 Mark as Unread (Others)</div>
+            <div class="context-menu-divider"></div>
+            <div class="context-menu-item" onclick="markChatUnreadDirect('${jid}', 'all')">🌎 Mark as Unread (Everyone)</div>
+          `;
+          
+          menu.innerHTML = menuHtml;
+          menu.style.left = e.clientX + 'px';
+          menu.style.top = e.clientY + 'px';
+          menu.classList.remove('hidden');
+        });
+      }
+      
+      document.addEventListener('click', (e) => {
+        if (!e.target.closest('#customContextMenu')) {
+          menu.classList.add('hidden');
+        }
+      });
+      
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          menu.classList.add('hidden');
+        }
+      });
+    }
+
     // ─── Init ─────────────────────────────────────────────────────────────────────
     // Show empty state initially
     document.getElementById('chatList').innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">Click "Connect Bridge" to start</div>';
     renderPanel();
     renderChatHeader();
+    setupCustomContextMenus();
 
     // Internet connectivity check
     updateInternetStatus();
