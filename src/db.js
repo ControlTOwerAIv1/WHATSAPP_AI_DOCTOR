@@ -240,6 +240,13 @@ class RelayDatabase {
     tx(chats);
   }
 
+  saveMessages(messages) {
+    const tx = this.db.transaction((items) => {
+      for (const item of items) this.upsertMessage(item);
+    });
+    tx(messages);
+  }
+
   importLegacyStore(filePath) {
     if (!fs.existsSync(filePath)) return false;
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));

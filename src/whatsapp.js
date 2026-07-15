@@ -932,23 +932,31 @@ async function connectToWhatsApp() {
     });
 
     sock.ev.on('contacts.upsert', (contacts) => {
+      const contactsToSave = [];
       for (const contact of contacts) {
         contactStore[contact.id] = { ...contactStore[contact.id], ...contact };
         // Track @lid <-> phone JID cross-reference mappings.
         stores.addLidMapping(contactStore[contact.id]);
-        database.upsertContact(contactStore[contact.id]);
+        contactsToSave.push(contactStore[contact.id]);
+      }
+      if (contactsToSave.length > 0) {
+        database.saveContacts(contactsToSave);
       }
       stores.backfillContactNames();
       stores.saveStore();
     });
 
     sock.ev.on('contacts.update', (updates) => {
+      const contactsToSave = [];
       for (const update of updates) {
         if (contactStore[update.id]) Object.assign(contactStore[update.id], update);
         else contactStore[update.id] = update;
         // Track @lid <-> phone JID mappings from the lid field.
         stores.addLidMapping(contactStore[update.id]);
-        database.upsertContact(contactStore[update.id]);
+        contactsToSave.push(contactStore[update.id]);
+      }
+      if (contactsToSave.length > 0) {
+        database.saveContacts(contactsToSave);
       }
       stores.backfillContactNames();
       stores.saveStore();
@@ -965,13 +973,18 @@ async function connectToWhatsApp() {
         // history a user explicitly asked to backfill.
         const isOnDemand = isLatest === undefined;
         // --- Process contacts and build lid<->jid map ---
+        const contactsToSave = [];
         for (const contact of contacts || []) {
           contactStore[contact.id] = { ...contactStore[contact.id], ...contact };
           // Track @lid <-> phone JID cross-reference mappings.
           stores.addLidMapping(contactStore[contact.id]);
-          database.upsertContact(contactStore[contact.id]);
+          contactsToSave.push(contactStore[contact.id]);
+        }
+        if (contactsToSave.length > 0) {
+          database.saveContacts(contactsToSave);
         }
         // --- Process chats ---
+        const chatsToSave = [];
         for (const chat of chats || []) {
           const ts = stores.toTimestamp(chat.conversationTimestamp);
           chatStore[chat.id] = stores.normalizeChat({
@@ -983,11 +996,16 @@ async function connectToWhatsApp() {
             timestamp: ts,
             lastMsg: chatStore[chat.id]?.lastMsg || '',
           });
-          database.upsertChat(chatStore[chat.id]);
+          chatsToSave.push(chatStore[chat.id]);
+        }
+        if (chatsToSave.length > 0) {
+          database.saveChats(chatsToSave);
         }
         // --- Process history messages (this was the missing piece!) ---
         let historyMsgCount = 0;
         const touchedJids = new Set();
+        const messagesToSave = [];
+        const businessContactsToSave = [];
         for (const rawMsg of messages || []) {
           try {
             // History messages arrive pre-parsed; they have a .message field like live messages.
@@ -1021,7 +1039,9 @@ async function connectToWhatsApp() {
                   contactStore[jid].notify = pushName;
                   contactUpdated = true;
                 }
-                if (contactUpdated) database.upsertContact(contactStore[jid]);
+                if (contactUpdated) {
+                  businessContactsToSave.push(contactStore[jid]);
+                }
               }
             }
 
@@ -1163,14 +1183,21 @@ async function connectToWhatsApp() {
               raw: rawMsgMinimized,
             };
             if (!msgRecord.id || !msgRecord.jid) continue;
-            // addMessageToStore deduplicates, sorts, trims, and persists to DB.
-            stores.addMessageToStore(msgRecord, { skipTrim: isOnDemand });
+            // addMessageToStore deduplicates, sorts, trims, and returns the message record.
+            const finalMsg = stores.addMessageToStore(msgRecord, { skipTrim: isOnDemand, skipDbWrite: true });
+            messagesToSave.push(finalMsg);
             touchedJids.add(jid);
             historyMsgCount++;
           } catch (histErr) {
             // Don't let one bad history message crash the entire sync.
             console.warn('[Bridge] Skipping bad history message:', histErr.message);
           }
+        }
+        if (businessContactsToSave.length > 0) {
+          database.saveContacts(businessContactsToSave);
+        }
+        if (messagesToSave.length > 0) {
+          database.saveMessages(messagesToSave);
         }
         stores.broadcastChats();
         stores.backfillContactNames();
@@ -1191,6 +1218,7 @@ async function connectToWhatsApp() {
     });
 
     sock.ev.on('chats.upsert', (chats) => {
+      const chatsToSave = [];
       for (const chat of chats) {
         chatStore[chat.id] = stores.normalizeChat({
           ...chatStore[chat.id],
@@ -1200,7 +1228,10 @@ async function connectToWhatsApp() {
           unreadCount: chat.unreadCount || 0,
           timestamp: stores.toTimestamp(chat.conversationTimestamp),
         });
-        database.upsertChat(chatStore[chat.id]);
+        chatsToSave.push(chatStore[chat.id]);
+      }
+      if (chatsToSave.length > 0) {
+        database.saveChats(chatsToSave);
       }
       stores.broadcastChats();
       stores.saveStore();

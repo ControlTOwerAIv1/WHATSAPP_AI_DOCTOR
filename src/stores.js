@@ -940,7 +940,9 @@ function addMessageToStore(msg, options = {}) {
   if (!options.skipTrim && messageStore[jid].length > CONFIG.MAX_MESSAGES_PER_CHAT) {
     messageStore[jid] = messageStore[jid].slice(-CONFIG.MAX_MESSAGES_PER_CHAT);
   }
-  database.upsertMessage(finalMsg);
+  if (!options.skipDbWrite) {
+    database.upsertMessage(finalMsg);
+  }
   return finalMsg;
 }
 
