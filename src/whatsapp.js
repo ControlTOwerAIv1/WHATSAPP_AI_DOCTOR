@@ -9,6 +9,10 @@ const {
   useMultiFileAuthState,
   downloadMediaMessage,
   fetchLatestWaWebVersion,
+  aesDecryptGCM,
+  hmacSign,
+  proto,
+  jidNormalizedUser,
 } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const QRCode = require('qrcode');
@@ -129,6 +133,7 @@ function getThreadJids(jid) {
 
 function markMessageDeletedInStore(jid, messageId, options = {}) {
   if (!jid || !messageId) return false;
+  console.log('[DEBUG-EDIT] markMessageDeletedInStore called:', { jid, messageId, options });
   const emitEvent = options.emitEvent !== false;
   const targetJids = getThreadJids(jid);
   let found = false;
@@ -165,6 +170,7 @@ function markMessageDeletedInStore(jid, messageId, options = {}) {
 
 function handleMessageEditInStore(jid, messageId, newContent, options = {}) {
   if (!jid || !messageId) return false;
+  console.log('[DEBUG-EDIT] handleMessageEditInStore called:', { jid, messageId, newContent: newContent?.substring(0, 80), options });
   const emitEvent = options.emitEvent !== false;
   const targetJids = getThreadJids(jid);
   let found = false;
@@ -173,20 +179,54 @@ function handleMessageEditInStore(jid, messageId, newContent, options = {}) {
 
   for (const threadJid of targetJids) {
     const thread = stores.messageStore[threadJid];
-    if (!thread) continue;
-    const msg = thread.find((item) => item.id === messageId);
+    let msg = null;
+    if (thread) {
+      msg = thread.find((item) => item.id === messageId);
+    }
+
+    if (!msg) {
+      try {
+        const row = database.db.prepare('SELECT payload FROM messages WHERE id = ?').get(messageId);
+        if (row) {
+          msg = stores.normalizeMessageRecord(JSON.parse(row.payload));
+        }
+      } catch (dbErr) {
+        console.warn('[Bridge] Failed to find message in DB for edit:', dbErr.message);
+      }
+    }
+
     if (!msg) continue;
-    if (msg.content === newContent) {
+    // newContent === null means we know an edit happened but couldn't recover
+    // the new text (e.g. missing/undecryptable messageSecret) - still mark it
+    // edited so the UI reflects reality, without blanking the existing content.
+    if (newContent !== null && msg.content === newContent) {
       continue;
     }
-    msg.content = newContent;
+    if (newContent !== null) {
+      msg.content = newContent;
+    }
     msg.editedAt = editedAt;
 
-    const { id: opId, name: opName } = stores.getConnectorOperator();
+    let editOperatorId = 'whatsapp-device';
+    let editOperatorName = 'WhatsApp Device';
+
+    if (options.isExternal) {
+      if (!msg.fromMe) {
+        editOperatorId = 'sender';
+        editOperatorName = 'Sender';
+      }
+    } else {
+      const { id: opId, name: opName } = stores.getConnectorOperator();
+      if (opId) {
+        editOperatorId = opId;
+        editOperatorName = opName;
+      }
+    }
+
     if (!msg.edits) msg.edits = [];
     msg.edits.push({
-      operatorId: opId || 'whatsapp-device',
-      operatorName: opName || 'WhatsApp Device',
+      operatorId: editOperatorId,
+      operatorName: editOperatorName,
       editedAt: editedAt * 1000,
     });
     updatedEdits = msg.edits;
@@ -275,15 +315,197 @@ async function markChatAsRead(jid) {
   }
 }
 
+function getMessageSecret(raw) {
+  if (!raw) return null;
+  const m = stores.unwrapMessage(raw);
+  if (!m) return null;
+
+  if (m.messageContextInfo?.messageSecret) {
+    return m.messageContextInfo.messageSecret;
+  }
+
+  for (const key of Object.keys(m)) {
+    const sub = m[key];
+    if (sub && typeof sub === 'object') {
+      if (sub.messageContextInfo?.messageSecret) {
+        return sub.messageContextInfo.messageSecret;
+      }
+      if (sub.contextInfo?.messageSecret) {
+        return sub.contextInfo.messageSecret;
+      }
+    }
+  }
+  return null;
+}
+
+function decryptSecretEdit(sem, secretBuffer, originalId, originalSenderJid) {
+  const jidsToTry = [originalSenderJid];
+  const alternative = originalSenderJid.endsWith('@lid')
+    ? stores.lidToJid[originalSenderJid]
+    : stores.jidToLid[originalSenderJid];
+  if (alternative) {
+    jidsToTry.push(jidNormalizedUser(alternative));
+  }
+
+  const encPayload = sem.encPayload;
+  const encIv = sem.encIv;
+
+  for (const senderJid of jidsToTry) {
+    try {
+      const toBinary = (txt) => Buffer.from(txt);
+      const senderBuf = toBinary(senderJid);
+      
+      const sign = Buffer.concat([ 
+        toBinary(originalId), 
+        senderBuf, 
+        senderBuf, 
+        toBinary('Message Edit'), 
+        new Uint8Array([1]) 
+      ]);
+      
+      const key = hmacSign(secretBuffer, new Uint8Array(32));
+      const decKey = hmacSign(sign, key);
+      const decrypted = aesDecryptGCM(encPayload, decKey, encIv, Buffer.alloc(0));
+      
+      const decoded = proto.Message.decode(decrypted);
+      if (decoded) {
+        return decoded;
+      }
+    } catch (err) {
+      console.warn(`[DEBUG-EDIT] Decryption failed with sender JID ${senderJid}:`, err.message);
+    }
+  }
+  return null;
+}
+
 function handleProtocolMessage(rawMsg, unwrappedMsg, options = {}) {
+  // Handle secretEncryptedMessage edit
+  if (unwrappedMsg?.secretEncryptedMessage) {
+    const sem = unwrappedMsg.secretEncryptedMessage;
+    // secretEncType can be 2 (MESSAGE_EDIT) or 'MESSAGE_EDIT'
+    if (sem.secretEncType === 2 || sem.secretEncType === 'MESSAGE_EDIT' || sem.secretEncType === proto.Message.SecretEncryptedMessage.SecretEncType.MESSAGE_EDIT) {
+      const targetId = sem.targetMessageKey?.id;
+      // rawMsg.key.remoteJid reflects our own thread-keying convention; the
+      // embedded targetMessageKey.remoteJid is recorded from the original
+      // sender's device perspective and is wrong (often our own jid) when the
+      // edit comes from someone else.
+      const targetJid = stores.getPreferredJid(rawMsg?.key?.remoteJid || sem.targetMessageKey?.remoteJid);
+      if (targetId && targetJid) {
+        console.log('[DEBUG-EDIT] Found secretEncryptedMessage of type MESSAGE_EDIT for target:', targetId);
+        
+        let origMsg = null;
+        const thread = stores.messageStore[targetJid];
+        if (thread) {
+          origMsg = thread.find(m => m.id === targetId);
+        }
+        if (!origMsg) {
+          try {
+            const row = database.db.prepare('SELECT payload FROM messages WHERE id = ?').get(targetId);
+            if (row) {
+              origMsg = stores.normalizeMessageRecord(JSON.parse(row.payload));
+            }
+          } catch (dbErr) {
+            console.warn('[Bridge] Failed to find message in DB for secretEncryptedMessage:', dbErr.message);
+          }
+        }
+        
+        if (origMsg) {
+          const messageSecret = getMessageSecret(origMsg.raw);
+          console.log('[DEBUG-EDIT] origMsg lookup:', {
+            hasRaw: !!origMsg.raw,
+            rawKeys: origMsg.raw ? Object.keys(origMsg.raw) : null,
+            fromMe: origMsg.fromMe,
+            hasMessageSecret: !!messageSecret,
+          });
+          if (messageSecret) {
+            let secretBuffer = null;
+            if (typeof messageSecret === 'string') {
+              secretBuffer = Buffer.from(messageSecret, 'base64');
+            } else if (Buffer.isBuffer(messageSecret) || messageSecret instanceof Uint8Array) {
+              secretBuffer = Buffer.from(messageSecret);
+            }
+            
+            if (secretBuffer) {
+              const myJidNormalised = jidNormalizedUser(sock?.user?.id || '');
+              const origSender = origMsg.fromMe
+                ? myJidNormalised
+                : (origMsg.participant || origMsg.jid || origMsg.from || '');
+              const normalizedSender = jidNormalizedUser(origSender);
+              
+              const decryptedMessage = decryptSecretEdit(sem, secretBuffer, targetId, normalizedSender);
+              if (decryptedMessage) {
+                // The decrypted plaintext is a protocolMessage(MESSAGE_EDIT) wrapper,
+                // same shape as the plaintext edit path below - not a bare Message.
+                const editedContent =
+                  decryptedMessage.protocolMessage?.editedMessage ||
+                  decryptedMessage.editedMessage?.message ||
+                  decryptedMessage;
+                const unwrappedEdited = stores.unwrapMessage(editedContent);
+                if (unwrappedEdited) {
+                  const newContent =
+                    unwrappedEdited.conversation ||
+                    unwrappedEdited.extendedTextMessage?.text ||
+                    unwrappedEdited.imageMessage?.caption ||
+                    unwrappedEdited.videoMessage?.caption ||
+                    '';
+                  handleMessageEditInStore(targetJid, targetId, newContent, options);
+                }
+              } else {
+                // Couldn't decrypt the new text - still surface that an edit happened.
+                console.warn('[DEBUG-EDIT] Failed to decrypt secretEncryptedMessage.');
+                handleMessageEditInStore(targetJid, targetId, null, options);
+              }
+            } else {
+              console.warn('[DEBUG-EDIT] messageSecret present but in an unrecognized format.');
+              handleMessageEditInStore(targetJid, targetId, null, options);
+            }
+          } else {
+            // No messageSecret available for the original message (e.g. it predates
+            // edit support or arrived without one) - can't recover the new text, but
+            // still flag the message as edited rather than silently dropping the event.
+            console.warn('[DEBUG-EDIT] Original message found, but messageSecret is missing.');
+            handleMessageEditInStore(targetJid, targetId, null, options);
+          }
+        } else {
+          console.warn('[DEBUG-EDIT] Original message not found in store or DB for ID:', targetId);
+        }
+      }
+      return true; // Stop processing this secretEncryptedMessage as a new message
+    }
+  }
+
+  // If it's an editedMessage container (decrypted edit update)
+  if (unwrappedMsg?.editedMessage) {
+    const targetId = rawMsg?.key?.id;
+    const targetJid = stores.getPreferredJid(rawMsg?.key?.remoteJid);
+    if (!targetId || !targetJid) return true;
+
+    const editedMsg = unwrappedMsg.editedMessage.message;
+    if (editedMsg) {
+      const unwrappedEdited = stores.unwrapMessage(editedMsg);
+      if (unwrappedEdited) {
+        const newContent =
+          unwrappedEdited.conversation ||
+          unwrappedEdited.extendedTextMessage?.text ||
+          unwrappedEdited.imageMessage?.caption ||
+          unwrappedEdited.videoMessage?.caption ||
+          '';
+        handleMessageEditInStore(targetJid, targetId, newContent, options);
+      }
+    }
+    return true;
+  }
+
   const protocol = unwrappedMsg?.protocolMessage;
   if (!protocol) return false;
+
+  console.log('[DEBUG-EDIT] Received protocolMessage type:', protocol.type, 'for target key:', JSON.stringify(protocol.key), 'rawMsg.key:', JSON.stringify(rawMsg.key));
 
   // WhatsApp "Delete for everyone" arrives as protocolMessage(type=0)
   // referencing the target message key rather than a normal content message.
   if (protocol.type === 0) {
     const targetId = protocol.key?.id;
-    const targetJid = stores.getPreferredJid(protocol.key?.remoteJid || rawMsg?.key?.remoteJid);
+    const targetJid = stores.getPreferredJid(rawMsg?.key?.remoteJid || protocol.key?.remoteJid);
     if (!targetId || !targetJid) return true;
     markMessageDeletedInStore(targetJid, targetId, options);
     return true;
@@ -292,7 +514,7 @@ function handleProtocolMessage(rawMsg, unwrappedMsg, options = {}) {
   // WhatsApp Edit Message arrives as protocolMessage(type=14)
   if (protocol.type === 14) {
     const targetId = protocol.key?.id;
-    const targetJid = stores.getPreferredJid(protocol.key?.remoteJid || rawMsg?.key?.remoteJid);
+    const targetJid = stores.getPreferredJid(rawMsg?.key?.remoteJid || protocol.key?.remoteJid);
     if (!targetId || !targetJid) return true;
     
     // Extract new edited text content
@@ -428,7 +650,24 @@ async function connectToWhatsApp() {
       version = [2, 3000, 1015901307];
     }
     console.log(`[Bridge] Using WA version: ${version.join('.')}`);
-    setSock(makeWASocket({ version, auth: state, printQRInTerminal: false, syncFullHistory: true }));
+    setSock(makeWASocket({
+      version,
+      auth: state,
+      printQRInTerminal: false,
+      syncFullHistory: true,
+      getMessage: async (key) => {
+        try {
+          const row = database.db.prepare('SELECT payload FROM messages WHERE id = ?').get(key.id);
+          if (row) {
+            const parsed = JSON.parse(row.payload);
+            return parsed.raw || undefined;
+          }
+        } catch (e) {
+          console.warn('[Bridge] getMessage failed:', e.message);
+        }
+        return undefined;
+      }
+    }));
     sock.ev.on('creds.update', saveCreds);
 
     const { messageStore, groupStore, contactStore, chatStore } = stores;
@@ -498,8 +737,12 @@ async function connectToWhatsApp() {
       for (const msg of messages) {
         if (!msg.message) continue;
 
+        if (msg.key?.fromMe) {
+          console.log('[DEBUG-EDIT-UPSERT] fromMe msg keys:', Object.keys(msg), 'message keys:', Object.keys(msg.message || {}), 'messageContextInfo:', JSON.stringify(msg.messageContextInfo || msg.message?.messageContextInfo || null), 'messageSecret:', msg.messageSecret ? 'exists' : 'missing');
+        }
+
         const unwrapped = stores.unwrapMessage(msg.message);
-        if (handleProtocolMessage(msg, unwrapped)) continue;
+        if (handleProtocolMessage(msg, unwrapped, { isExternal: true })) continue;
 
         const parsedRaw = await parseMessage(msg, isHistory);
         if (!parsedRaw) continue;
@@ -584,10 +827,24 @@ async function connectToWhatsApp() {
           handleMessageStatusUpdateInStore(key.remoteJid, key.id, update.status, key.fromMe);
         }
 
+        // Handle "delete for everyone" (REVOKE) from regular WhatsApp users.
+        // Baileys' processMessage converts protocolMessage.type === REVOKE into a
+        // messages.update with { message: null, messageStubType: 1 (REVOKE) }.
+        // The old code only checked `update.message` which is null for revokes.
+        if (update.messageStubType === 1 /* WAMessageStubType.REVOKE */) {
+          const targetJid = stores.getPreferredJid(key.remoteJid);
+          if (targetJid) {
+            console.log('[DEBUG-EDIT] messages.update REVOKE (delete for everyone):', JSON.stringify(key));
+            markMessageDeletedInStore(targetJid, key.id);
+          }
+          continue;
+        }
+
         const rawMessage = update.message || item?.message;
         if (rawMessage) {
+          console.log('[DEBUG-EDIT] messages.update has message, keys:', Object.keys(rawMessage), 'key:', JSON.stringify(key));
           const unwrapped = stores.unwrapMessage(rawMessage);
-          handleProtocolMessage({ key, message: rawMessage }, unwrapped);
+          handleProtocolMessage({ key, message: rawMessage }, unwrapped, { isExternal: true });
         }
       }
     });
@@ -712,7 +969,7 @@ async function connectToWhatsApp() {
             let m = stores.unwrapMessage(rawMsg.message);
             if (!m) continue;
 
-            if (handleProtocolMessage(rawMsg, m, { emitEvent: false })) {
+            if (handleProtocolMessage(rawMsg, m, { emitEvent: false, isExternal: true })) {
               touchedJids.add(jid);
               continue;
             }
@@ -848,8 +1105,10 @@ async function connectToWhatsApp() {
             } else {
               content = '[Unsupported message type]';
             }
-            const isMedia = ['image', 'video', 'audio', 'voice', 'document', 'sticker'].includes(mediaType);
-            const rawMsgMinimized = (isMedia && (!mediaUrl || mediaUrl === 'null')) ? { key: rawMsg.key, message: rawMsg.message } : null;
+            const rawMsgMinimized = rawMsg.message ? {
+              ...rawMsg.message,
+              messageContextInfo: rawMsg.messageContextInfo || rawMsg.message?.messageContextInfo || null
+            } : null;
 
             const msgRecord = {
               id: key.id,
@@ -929,15 +1188,9 @@ async function parseMessage(raw, skipMedia = false) {
   let m = stores.unwrapMessage(raw.message);
   if (!m) return null;
 
-  const keys = Object.keys(m);
-  if (keys.length === 0) return null;
-  const isIgnored = keys.length === 1 && (
-    keys[0] === 'senderKeyDistributionMessage' ||
-    keys[0] === 'protocolMessage' ||
-    keys[0] === 'reactionMessage' ||
-    keys[0] === 'peerDataOperationRequestMessage' ||
-    keys[0] === 'emptyMessage'
-  );
+  console.log('[DEBUG-EDIT] parseMessage incoming keys:', Object.keys(m), 'message.id:', raw.key?.id);
+
+  const isIgnored = m.protocolMessage || m.senderKeyDistributionMessage || m.reactionMessage || m.peerDataOperationRequestMessage || m.emptyMessage || m.secretEncryptedMessage;
   if (isIgnored) return null;
 
   let content = '';
@@ -1109,7 +1362,10 @@ async function parseMessage(raw, skipMedia = false) {
     quotedSender,
     quotedMediaType,
     status: raw.status !== undefined ? raw.status : null,
-    raw: (['image', 'video', 'audio', 'voice', 'document', 'sticker'].includes(mediaType) && (!mediaUrl || mediaUrl === 'null')) ? { key: raw.key, message: raw.message } : null,
+    raw: raw.message ? {
+      ...raw.message,
+      messageContextInfo: raw.messageContextInfo || raw.message?.messageContextInfo || null
+    } : null,
   };
 }
 

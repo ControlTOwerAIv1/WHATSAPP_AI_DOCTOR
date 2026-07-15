@@ -1312,7 +1312,12 @@
     function updateMessageInPlace(messageId, newContent, editedAt, edits) {
       const row = document.getElementById('msg-' + messageId);
       if (!row) return;
-      row.dataset.content = newContent || '';
+      // newContent is null when we know an edit happened but couldn't recover the
+      // new text (e.g. undecryptable) - keep showing the existing content in that case.
+      const contentKnown = newContent !== null && newContent !== undefined;
+      if (contentKnown) {
+        row.dataset.content = newContent;
+      }
       if (edits) {
         row.dataset.edits = JSON.stringify(edits);
       }
@@ -1320,7 +1325,7 @@
       if (!bubble) return;
       // Update content
       const contentDiv = bubble.querySelector('.msg-text');
-      if (contentDiv) {
+      if (contentDiv && contentKnown) {
         contentDiv.textContent = newContent;
       }
       // Add/update edited mark

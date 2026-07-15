@@ -476,6 +476,7 @@ function normalizeMessageRecord(msg = {}) {
     quotedMediaType: msg.quotedMediaType || null,
     status: msg.status !== undefined ? msg.status : null,
     edits: msg.edits ? [...msg.edits] : [],
+    raw: msg.raw || null,
   };
 }
 
@@ -1111,6 +1112,7 @@ async function recordOutboundMessage({ jid, operator, result, message }) {
     quotedSender: message.quotedSender || null,
     quotedMediaType: message.quotedMediaType || null,
     status: result?.status !== undefined ? result.status : 1,
+    raw: result?.message || null,
   });
   updateChatPreview(jid, sentMsg.content, timestamp);
   saveStore();
