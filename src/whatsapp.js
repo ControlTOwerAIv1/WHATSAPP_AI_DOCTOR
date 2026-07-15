@@ -169,14 +169,28 @@ function handleMessageEditInStore(jid, messageId, newContent, options = {}) {
   const targetJids = getThreadJids(jid);
   let found = false;
   const editedAt = Math.floor(Date.now() / 1000);
+  let updatedEdits = [];
 
   for (const threadJid of targetJids) {
     const thread = stores.messageStore[threadJid];
     if (!thread) continue;
     const msg = thread.find((item) => item.id === messageId);
     if (!msg) continue;
+    if (msg.content === newContent) {
+      continue;
+    }
     msg.content = newContent;
     msg.editedAt = editedAt;
+
+    const { id: opId, name: opName } = stores.getConnectorOperator();
+    if (!msg.edits) msg.edits = [];
+    msg.edits.push({
+      operatorId: opId || 'whatsapp-device',
+      operatorName: opName || 'WhatsApp Device',
+      editedAt: editedAt * 1000,
+    });
+    updatedEdits = msg.edits;
+
     database.upsertMessage(msg);
     found = true;
 
@@ -191,7 +205,7 @@ function handleMessageEditInStore(jid, messageId, newContent, options = {}) {
   }
 
   if (found) {
-    if (emitEvent) io.emit('message_edited', { jid: targetJids[0], messageId, newContent, editedAt: editedAt * 1000 });
+    if (emitEvent) io.emit('message_edited', { jid: targetJids[0], messageId, newContent, editedAt: editedAt * 1000, edits: updatedEdits });
     stores.broadcastChats();
     stores.saveStore();
   }

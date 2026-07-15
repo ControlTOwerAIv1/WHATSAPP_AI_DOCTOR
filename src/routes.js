@@ -680,16 +680,32 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
 
     try {
       await sock.sendMessage(jid, { edit: { id: messageId, remoteJid: jid, fromMe: true }, text: newContent });
-      const msgs = stores.messageStore[jid];
-      if (msgs) {
-        const found = msgs.find((msg) => msg.id === messageId);
-        if (found) {
-          found.content = newContent;
-          found.editedAt = Date.now();
-          database.upsertMessage(found);
+      const altJid = jid.endsWith('@lid') ? stores.lidToJid[jid] : stores.jidToLid[jid];
+      const targetJids = altJid ? [jid, altJid] : [jid];
+      let updatedEdits = [];
+      const editTimestamp = Date.now();
+      for (const tJid of targetJids) {
+        const msgs = stores.messageStore[tJid];
+        if (msgs) {
+          const found = msgs.find((msg) => msg.id === messageId);
+          if (found) {
+            found.content = newContent;
+            found.editedAt = editTimestamp;
+            if (!found.edits) found.edits = [];
+            const exists = found.edits.some((e) => e.editedAt === editTimestamp);
+            if (!exists) {
+              found.edits.push({
+                operatorId: operator?.id || 'unknown',
+                operatorName: operator?.name || 'Unknown',
+                editedAt: editTimestamp,
+              });
+            }
+            updatedEdits = found.edits;
+            database.upsertMessage(found);
+          }
         }
       }
-      io.emit('message_edited', { jid, messageId, newContent, editedAt: Date.now() });
+      io.emit('message_edited', { jid, messageId, newContent, editedAt: editTimestamp, edits: updatedEdits });
       stores.saveStore();
       res.json({ success: true });
     } catch (e) {
@@ -1183,18 +1199,30 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
         await sock.sendMessage(jid, { edit: { id: messageId, remoteJid: jid, fromMe: true }, text: newContent });
         const altJid = jid.endsWith('@lid') ? stores.lidToJid[jid] : stores.jidToLid[jid];
         const targetJids = altJid ? [jid, altJid] : [jid];
+        let updatedEdits = [];
+        const editTimestamp = Date.now();
         for (const tJid of targetJids) {
           const msgs = stores.messageStore[tJid];
           if (msgs) {
             const found = msgs.find((msg) => msg.id === messageId);
             if (found) {
               found.content = newContent;
-              found.editedAt = Date.now();
+              found.editedAt = editTimestamp;
+              if (!found.edits) found.edits = [];
+              const exists = found.edits.some((e) => e.editedAt === editTimestamp);
+              if (!exists) {
+                found.edits.push({
+                  operatorId: operator?.id || 'unknown',
+                  operatorName: operator?.name || 'Unknown',
+                  editedAt: editTimestamp,
+                });
+              }
+              updatedEdits = found.edits;
               database.upsertMessage(found);
             }
           }
         }
-        io.emit('message_edited', { jid, messageId, newContent, editedAt: Date.now() });
+        io.emit('message_edited', { jid, messageId, newContent, editedAt: editTimestamp, edits: updatedEdits });
         stores.saveStore();
       } catch (e) {
         socket.emit('error', { message: e.message });

@@ -475,6 +475,7 @@ function normalizeMessageRecord(msg = {}) {
     quotedSender: msg.quotedSender || null,
     quotedMediaType: msg.quotedMediaType || null,
     status: msg.status !== undefined ? msg.status : null,
+    edits: msg.edits ? [...msg.edits] : [],
   };
 }
 
@@ -917,8 +918,20 @@ function addMessageToStore(msg, options = {}) {
   if (!jid || !normalized.id) return normalized;
   if (!messageStore[jid]) messageStore[jid] = [];
   const existingIndex = messageStore[jid].findIndex((item) => item.id === normalized.id);
-  if (existingIndex >= 0) messageStore[jid][existingIndex] = normalized;
-  else messageStore[jid].push(normalized);
+  let finalMsg = normalized;
+  if (existingIndex >= 0) {
+    const existing = messageStore[jid][existingIndex];
+    finalMsg = {
+      ...normalized,
+      operatorId: existing.operatorId || normalized.operatorId,
+      operatorName: existing.operatorName || normalized.operatorName,
+      edits: (existing.edits && existing.edits.length > 0) ? existing.edits : normalized.edits,
+      clientTempId: existing.clientTempId || normalized.clientTempId,
+    };
+    messageStore[jid][existingIndex] = finalMsg;
+  } else {
+    messageStore[jid].push(normalized);
+  }
   messageStore[jid].sort((a, b) => toTimestamp(a.timestamp) - toTimestamp(b.timestamp));
   // Skipped for on-demand history backfill ("load older messages"): trimming
   // to the most recent N here would discard the older messages immediately
@@ -926,8 +939,8 @@ function addMessageToStore(msg, options = {}) {
   if (!options.skipTrim && messageStore[jid].length > CONFIG.MAX_MESSAGES_PER_CHAT) {
     messageStore[jid] = messageStore[jid].slice(-CONFIG.MAX_MESSAGES_PER_CHAT);
   }
-  database.upsertMessage(normalized);
-  return normalized;
+  database.upsertMessage(finalMsg);
+  return finalMsg;
 }
 
 function broadcastChats() {

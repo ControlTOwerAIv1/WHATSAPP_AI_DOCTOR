@@ -1175,10 +1175,40 @@
       row.dataset.content = msg.content || '';
       row.dataset.status = msg.status !== undefined ? msg.status : '';
       if (msg.quotedMessageId) row.dataset.quotedMessageId = msg.quotedMessageId;
+      row.dataset.operatorId = msg.operatorId || '';
+      row.dataset.operatorName = msg.operatorName || '';
+      row.dataset.edits = JSON.stringify(msg.edits || []);
+
       let resolvedSender = cleanJid(msg.sender);
       const senderName = outgoing
         ? (msg.operatorName || resolvedSender || 'Unknown')
         : (resolvedSender || (msg.participant ? cleanJid(msg.participant) : 'Unknown'));
+
+      let displaySenderName = senderName;
+      let tooltipText = '';
+      if (outgoing && msg.operatorName) {
+        tooltipText = `Sent by ${msg.operatorName}`;
+        if (msg.edits && msg.edits.length > 0) {
+          const uniqueEdits = [];
+          for (const e of msg.edits) {
+            const isDup = uniqueEdits.some(ue => 
+              ue.operatorId === e.operatorId && 
+              Math.abs(ue.editedAt - e.editedAt) < 3000
+            );
+            if (!isDup) {
+              uniqueEdits.push(e);
+            }
+          }
+
+          const hasEditByOther = uniqueEdits.some(e => e.operatorId && e.operatorId !== msg.operatorId);
+          if (hasEditByOther) {
+            const lastEdit = uniqueEdits[uniqueEdits.length - 1];
+            displaySenderName = `${senderName} (edited by ${lastEdit.operatorName || lastEdit.operatorId})`;
+          }
+          const editLines = uniqueEdits.map(e => `edited by ${e.operatorName || e.operatorId || 'Unknown'}`);
+          tooltipText += `, ${editLines.join(', ')}`;
+        }
+      }
 
       const initialName = outgoing
         ? (msg.operatorName || operatorName || '?')
@@ -1259,7 +1289,7 @@
       row.innerHTML = `
     <div class="msg-avatar ${msgAvatarType}">${msgAvatarContent}</div>
     <div class="msg-bubble">
-      ${showSender ? `<div class="msg-sender" style="color: ${senderColor}">${senderName}</div>` : ''}
+      ${showSender ? `<div class="msg-sender" title="${tooltipText}" style="color: ${senderColor}">${displaySenderName}</div>` : ''}
       ${contentHtml}
       ${msg.deleted ? '' : `<div class="msg-time">${timeStr}${editedMark}${statusHtml}</div>`}
       ${!msg.deleted && (allowReply || allowEdit || allowDelete) ? `
@@ -1279,10 +1309,13 @@
       if (scroll) area.scrollTop = area.scrollHeight;
     }
 
-    function updateMessageInPlace(messageId, newContent, editedAt) {
+    function updateMessageInPlace(messageId, newContent, editedAt, edits) {
       const row = document.getElementById('msg-' + messageId);
       if (!row) return;
       row.dataset.content = newContent || '';
+      if (edits) {
+        row.dataset.edits = JSON.stringify(edits);
+      }
       const bubble = row.querySelector('.msg-bubble');
       if (!bubble) return;
       // Update content
@@ -1296,6 +1329,42 @@
         const existing = timeDiv.querySelector('.msg-edited');
         if (existing) existing.remove();
         timeDiv.insertAdjacentHTML('beforeend', '<span class="msg-edited"> (edited)</span>');
+      }
+
+      // Update sender name & tooltip
+      const senderDiv = bubble.querySelector('.msg-sender');
+      if (senderDiv) {
+        const originalOperatorId = row.dataset.operatorId || '';
+        const originalOperatorName = row.dataset.operatorName || '';
+        const currentEdits = JSON.parse(row.dataset.edits || '[]');
+        
+        let displaySenderName = originalOperatorName || 'You';
+        let tooltipText = `Sent by ${originalOperatorName || 'You'}`;
+        
+        if (currentEdits.length > 0) {
+          const uniqueEdits = [];
+          for (const e of currentEdits) {
+            const isDup = uniqueEdits.some(ue => 
+              ue.operatorId === e.operatorId && 
+              Math.abs(ue.editedAt - e.editedAt) < 3000
+            );
+            if (!isDup) {
+              uniqueEdits.push(e);
+            }
+          }
+
+          const hasEditByOther = uniqueEdits.some(e => e.operatorId && e.operatorId !== originalOperatorId);
+          if (hasEditByOther) {
+            const lastEdit = uniqueEdits[uniqueEdits.length - 1];
+            displaySenderName = `${originalOperatorName || 'You'} (edited by ${lastEdit.operatorName || lastEdit.operatorId})`;
+          }
+          
+          const editLines = uniqueEdits.map(e => `edited by ${e.operatorName || e.operatorId || 'Unknown'}`);
+          tooltipText += `, ${editLines.join(', ')}`;
+        }
+        
+        senderDiv.textContent = displaySenderName;
+        senderDiv.setAttribute('title', tooltipText);
       }
     }
 
@@ -1430,6 +1499,7 @@
         quotedSender: m.quotedSender || null,
         quotedMediaType: m.quotedMediaType || null,
         status: m.status !== undefined ? m.status : null,
+        edits: m.edits || [],
       };
     }
 
@@ -2335,9 +2405,9 @@
         }
       });
 
-      socket.on('message_edited', ({ jid, messageId, newContent, editedAt }) => {
+      socket.on('message_edited', ({ jid, messageId, newContent, editedAt, edits }) => {
         if (isActiveChatJid(jid)) {
-          updateMessageInPlace(messageId, newContent, editedAt);
+          updateMessageInPlace(messageId, newContent, editedAt, edits);
         }
       });
 

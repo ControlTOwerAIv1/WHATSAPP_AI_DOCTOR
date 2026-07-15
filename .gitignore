@@ -13,3 +13,5 @@ build/
 nodemon.json
 .claude/
 .vscode/
+/data/*
+     
