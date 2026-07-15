@@ -679,7 +679,8 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     if (!eligibility.ok) return res.status(eligibility.status).json(serializeActionError(eligibility));
 
     try {
-      await sock.sendMessage(jid, { edit: { id: messageId, remoteJid: jid, fromMe: true }, text: newContent });
+      const result = await sock.sendMessage(jid, { edit: { id: messageId, remoteJid: jid, fromMe: true }, text: newContent });
+      const editMsgId = result?.key?.id;
       const altJid = jid.endsWith('@lid') ? stores.lidToJid[jid] : stores.jidToLid[jid];
       const targetJids = altJid ? [jid, altJid] : [jid];
       let updatedEdits = [];
@@ -691,6 +692,12 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
           if (found) {
             found.content = newContent;
             found.editedAt = editTimestamp;
+            if (editMsgId) {
+              found.latestEditMsgId = editMsgId;
+            }
+            if (found.fromMe) {
+              found.status = 2; // Reset status back to sent (SERVER_ACK) when edited
+            }
             if (!found.edits) found.edits = [];
             const exists = found.edits.some((e) => e.editedAt === editTimestamp);
             if (!exists) {
@@ -698,6 +705,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
                 operatorId: operator?.id || 'unknown',
                 operatorName: operator?.name || 'Unknown',
                 editedAt: editTimestamp,
+                editMsgId: editMsgId || null,
               });
             }
             updatedEdits = found.edits;
@@ -706,6 +714,9 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
         }
       }
       io.emit('message_edited', { jid, messageId, newContent, editedAt: editTimestamp, edits: updatedEdits });
+      for (const tJid of targetJids) {
+        io.emit('message_status_update', { jid: tJid, messageId, status: 2, fromMe: true });
+      }
       stores.saveStore();
       res.json({ success: true });
     } catch (e) {
@@ -1196,7 +1207,8 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       }
 
       try {
-        await sock.sendMessage(jid, { edit: { id: messageId, remoteJid: jid, fromMe: true }, text: newContent });
+        const result = await sock.sendMessage(jid, { edit: { id: messageId, remoteJid: jid, fromMe: true }, text: newContent });
+        const editMsgId = result?.key?.id;
         const altJid = jid.endsWith('@lid') ? stores.lidToJid[jid] : stores.jidToLid[jid];
         const targetJids = altJid ? [jid, altJid] : [jid];
         let updatedEdits = [];
@@ -1208,6 +1220,12 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
             if (found) {
               found.content = newContent;
               found.editedAt = editTimestamp;
+              if (editMsgId) {
+                found.latestEditMsgId = editMsgId;
+              }
+              if (found.fromMe) {
+                found.status = 2; // Reset status back to sent (SERVER_ACK) when edited
+              }
               if (!found.edits) found.edits = [];
               const exists = found.edits.some((e) => e.editedAt === editTimestamp);
               if (!exists) {
@@ -1215,6 +1233,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
                   operatorId: operator?.id || 'unknown',
                   operatorName: operator?.name || 'Unknown',
                   editedAt: editTimestamp,
+                  editMsgId: editMsgId || null,
                 });
               }
               updatedEdits = found.edits;
@@ -1223,6 +1242,9 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
           }
         }
         io.emit('message_edited', { jid, messageId, newContent, editedAt: editTimestamp, edits: updatedEdits });
+        for (const tJid of targetJids) {
+          io.emit('message_status_update', { jid: tJid, messageId, status: 2, fromMe: true });
+        }
         stores.saveStore();
       } catch (e) {
         socket.emit('error', { message: e.message });

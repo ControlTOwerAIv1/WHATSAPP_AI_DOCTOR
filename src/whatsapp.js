@@ -206,6 +206,12 @@ function handleMessageEditInStore(jid, messageId, newContent, options = {}) {
       msg.content = newContent;
     }
     msg.editedAt = editedAt;
+    if (msg.fromMe) {
+      msg.status = 2; // Reset status back to sent (SERVER_ACK) when edited
+    }
+    if (options.editMsgId) {
+      msg.latestEditMsgId = options.editMsgId;
+    }
 
     let editOperatorId = 'whatsapp-device';
     let editOperatorName = 'WhatsApp Device';
@@ -228,6 +234,7 @@ function handleMessageEditInStore(jid, messageId, newContent, options = {}) {
       operatorId: editOperatorId,
       operatorName: editOperatorName,
       editedAt: editedAt * 1000,
+      editMsgId: options.editMsgId || null,
     });
     updatedEdits = msg.edits;
 
@@ -245,7 +252,16 @@ function handleMessageEditInStore(jid, messageId, newContent, options = {}) {
   }
 
   if (found) {
-    if (emitEvent) io.emit('message_edited', { jid: targetJids[0], messageId, newContent, editedAt: editedAt * 1000, edits: updatedEdits });
+    if (emitEvent) {
+      io.emit('message_edited', { jid: targetJids[0], messageId, newContent, editedAt: editedAt * 1000, edits: updatedEdits });
+      for (const threadJid of targetJids) {
+        const thread = stores.messageStore[threadJid];
+        const msg = thread?.find((item) => item.id === messageId);
+        if (msg && msg.fromMe) {
+          io.emit('message_status_update', { jid: threadJid, messageId: msg.id, status: 2, fromMe: true });
+        }
+      }
+    }
     stores.broadcastChats();
     stores.saveStore();
   }
@@ -261,7 +277,13 @@ function handleMessageStatusUpdateInStore(jid, messageId, status, fromMe) {
   for (const threadJid of targetJids) {
     const thread = stores.messageStore[threadJid];
     if (!thread) continue;
-    const msg = thread.find((item) => item.id === messageId);
+    
+    // Find message by its ID, OR by its latestEditMsgId, OR if one of its edits matches messageId
+    const msg = thread.find((item) => 
+      item.id === messageId || 
+      item.latestEditMsgId === messageId || 
+      (item.edits && item.edits.some(e => e.editMsgId === messageId))
+    );
     if (!msg) continue;
 
     if (msg.status !== status) {
@@ -273,7 +295,15 @@ function handleMessageStatusUpdateInStore(jid, messageId, status, fromMe) {
 
   if (found) {
     for (const threadJid of targetJids) {
-      io.emit('message_status_update', { jid: threadJid, messageId, status, fromMe });
+      const thread = stores.messageStore[threadJid];
+      const msg = thread?.find((item) => 
+        item.id === messageId || 
+        item.latestEditMsgId === messageId || 
+        (item.edits && item.edits.some(e => e.editMsgId === messageId))
+      );
+      if (msg) {
+        io.emit('message_status_update', { jid: threadJid, messageId: msg.id, status, fromMe });
+      }
     }
     stores.saveStore();
   }
@@ -448,23 +478,23 @@ function handleProtocolMessage(rawMsg, unwrappedMsg, options = {}) {
                     unwrappedEdited.imageMessage?.caption ||
                     unwrappedEdited.videoMessage?.caption ||
                     '';
-                  handleMessageEditInStore(targetJid, targetId, newContent, options);
+                  handleMessageEditInStore(targetJid, targetId, newContent, { ...options, editMsgId: rawMsg?.key?.id });
                 }
               } else {
                 // Couldn't decrypt the new text - still surface that an edit happened.
                 console.warn('[DEBUG-EDIT] Failed to decrypt secretEncryptedMessage.');
-                handleMessageEditInStore(targetJid, targetId, null, options);
+                handleMessageEditInStore(targetJid, targetId, null, { ...options, editMsgId: rawMsg?.key?.id });
               }
             } else {
               console.warn('[DEBUG-EDIT] messageSecret present but in an unrecognized format.');
-              handleMessageEditInStore(targetJid, targetId, null, options);
+              handleMessageEditInStore(targetJid, targetId, null, { ...options, editMsgId: rawMsg?.key?.id });
             }
           } else {
             // No messageSecret available for the original message (e.g. it predates
             // edit support or arrived without one) - can't recover the new text, but
             // still flag the message as edited rather than silently dropping the event.
             console.warn('[DEBUG-EDIT] Original message found, but messageSecret is missing.');
-            handleMessageEditInStore(targetJid, targetId, null, options);
+            handleMessageEditInStore(targetJid, targetId, null, { ...options, editMsgId: rawMsg?.key?.id });
           }
         } else {
           console.warn('[DEBUG-EDIT] Original message not found in store or DB for ID:', targetId);
@@ -490,7 +520,7 @@ function handleProtocolMessage(rawMsg, unwrappedMsg, options = {}) {
           unwrappedEdited.imageMessage?.caption ||
           unwrappedEdited.videoMessage?.caption ||
           '';
-        handleMessageEditInStore(targetJid, targetId, newContent, options);
+        handleMessageEditInStore(targetJid, targetId, newContent, { ...options, editMsgId: rawMsg?.key?.id });
       }
     }
     return true;
@@ -528,7 +558,7 @@ function handleProtocolMessage(rawMsg, unwrappedMsg, options = {}) {
           unwrappedEdited.imageMessage?.caption ||
           unwrappedEdited.videoMessage?.caption ||
           '';
-        handleMessageEditInStore(targetJid, targetId, newContent, options);
+        handleMessageEditInStore(targetJid, targetId, newContent, { ...options, editMsgId: rawMsg?.key?.id });
       }
     }
     return true;
