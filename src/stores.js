@@ -35,6 +35,12 @@ let linkingOperator = null;
 
 let saveTimer = null;
 const pendingResolutions = new Set();
+// Guards normalizeChat()'s catch-up merge (below) from re-scheduling a merge
+// for the same @lid while one is already queued — without this, every
+// broadcastChats() -> sortedChats() -> normalizeChat() pass would re-queue
+// another merge + broadcast for any @lid chat still present, and each of
+// those broadcasts triggers the same pass again, fanning out without bound.
+const pendingLidMerges = new Set();
 // LIDs that returned null from getPNForLID — maps lid -> timestamp of last failed attempt.
 // Persisted to disk so restarts don't re-flood with retries for already-failed LIDs.
 // In-memory: skipped for LID_RETRY_COOLDOWN_MS to avoid flooding on every render.
@@ -78,6 +84,12 @@ function saveFailedResolutions() {
   } catch (e) {
     // Non-critical
   }
+}
+
+function clearFailedResolutions() {
+  failedResolutions.clear();
+  saveFailedResolutions();
+  console.log('[Bridge] Cleared failed LID resolutions cache.');
 }
 const DEFAULT_EDIT_WINDOW_SECONDS = 15 * 60;
 const DEFAULT_DELETE_FOR_EVERYONE_WINDOW_SECONDS = 60 * 60 * 60;
@@ -132,16 +144,44 @@ function clearInMemoryStores() {
   for (const key of Object.keys(jidToLid)) delete jidToLid[key];
 }
 
+function jidNormalizedUser(jid) {
+  if (!jid) return jid;
+  if (jid.includes('@')) {
+    const [user, domain] = jid.split('@');
+    const cleanUser = user.split(':')[0];
+    return `${cleanUser}@${domain}`;
+  }
+  return jid.split(':')[0];
+}
+
 function addLidMapping(contact) {
   if (!contact) return;
   const id = contact.id;
   if (id) {
+    let lid = null;
+    let pn = null;
     if (id.endsWith('@lid') && contact.phoneNumber) {
-      lidToJid[id] = contact.phoneNumber;
-      jidToLid[contact.phoneNumber] = id;
+      lid = id;
+      pn = jidNormalizedUser(contact.phoneNumber);
     } else if (!id.endsWith('@lid') && contact.lid) {
-      lidToJid[contact.lid] = id;
-      jidToLid[id] = contact.lid;
+      lid = contact.lid;
+      pn = jidNormalizedUser(id);
+    }
+
+    if (lid && pn) {
+      const isNewMapping = !lidToJid[lid];
+      lidToJid[lid] = pn;
+      jidToLid[pn] = lid;
+
+      if (isNewMapping) {
+        console.log(`[Bridge] Discovered mapping during session: ${lid} -> ${pn}`);
+        // Merge chat/messages dynamically!
+        setImmediate(() => {
+          mergeLidChatToPhone(lid, pn);
+          if (io) io.emit('chat_merged', { lid, jid: pn });
+          broadcastChats();
+        });
+      }
     }
   }
 }
@@ -188,15 +228,20 @@ async function resolveLidToPhoneAsync(lid) {
   try {
     if (!sock.signalRepository) {
       console.log(`[Bridge] Cannot resolve LID ${lid}: sock.signalRepository is undefined.`);
+      failedResolutions.set(lid, Date.now());
+      saveFailedResolutions();
       return null;
     }
     if (!sock.signalRepository.lidMapping) {
       console.log(`[Bridge] Cannot resolve LID ${lid}: sock.signalRepository.lidMapping is undefined.`);
+      failedResolutions.set(lid, Date.now());
+      saveFailedResolutions();
       return null;
     }
 
-    const pn = await sock.signalRepository.lidMapping.getPNForLID(lid);
-    if (pn) {
+    const pnRaw = await sock.signalRepository.lidMapping.getPNForLID(lid);
+    if (pnRaw) {
+      const pn = jidNormalizedUser(pnRaw);
       console.log(`[Bridge] Resolved LID ${lid} -> PN ${pn}`);
       lidToJid[lid] = pn;
       jidToLid[pn] = lid;
@@ -306,6 +351,10 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function resolveAllLidsFromStore() {
   if (!sock || !sock.user) return;
+  // Reconnect and history-sync-completion can both trigger this close
+  // together; without this guard they'd run two full sweeps over the same
+  // backlog concurrently.
+  if (syncState.resolvingLids) return;
   updateSyncState({ resolvingLids: true });
   try {
     const now = Date.now();
@@ -363,6 +412,22 @@ function normalizeChat(chat = {}, operatorId = null) {
       const phoneJid = lidToJid[id];
       if (phoneJid) {
         phone = phoneJid.split('@')[0].split(':')[0];
+        // Catch-up merge: a mapping exists but this chat is still stored under
+        // the LID (e.g. loaded from disk before the mapping was learned).
+        // Guarded so repeated normalizeChat() calls for the same @lid (which
+        // happen constantly via sortedChats/broadcastChats) don't each queue
+        // their own merge+broadcast.
+        if (chatStore[id] && !pendingLidMerges.has(id)) {
+          pendingLidMerges.add(id);
+          setImmediate(() => {
+            pendingLidMerges.delete(id);
+            if (chatStore[id]) {
+              mergeLidChatToPhone(id, phoneJid);
+              if (io) io.emit('chat_merged', { lid: id, jid: phoneJid });
+              broadcastChats();
+            }
+          });
+        }
       } else {
         // Trigger background resolution!
         resolveLidToPhoneAsync(id).then((pn) => {
@@ -622,11 +687,19 @@ function loadStore() {
     for (const msg of state.messages) {
       if (!msg?.jid) continue;
       if (!messageStore[msg.jid]) messageStore[msg.jid] = [];
+      // Same reasoning as addMessageToStore: raw stays in SQLite, not resident
+      // in memory for every message across every chat loaded at boot.
+      msg.raw = null;
       messageStore[msg.jid].push(msg);
     }
     connectorOperatorId = database.getMetadata('connector_operator_id');
     connectorOperatorName = database.getMetadata('connector_operator_name');
     migrateChatTypes();
+
+    const storedOwnJid = database.getMetadata('current_logged_jid');
+    if (storedOwnJid) {
+      cleanupOwnNameFromContacts(storedOwnJid, 'Jafar Beldar');
+    }
 
     // Merge any existing LID chats/messages that already have resolved PNs
     for (const lid of Object.keys(lidToJid)) {
@@ -676,26 +749,90 @@ function sortedChats(operatorId = null) {
 function resolveContactName(jid) {
   // Direct lookup first.
   let contact = contactStore[jid];
-  if (contact?.name || contact?.notify || contact?.verifiedName) {
-    return contact.name || contact.notify || contact.verifiedName;
+  if (contact?.name || contact?.verifiedName || contact?.notify) {
+    return contact.name || contact.verifiedName || contact.notify;
   }
   // Cross-reference: if jid is a @lid, look up the mapped phone JID.
   const mappedJid = lidToJid[jid];
   if (mappedJid) {
     contact = contactStore[mappedJid];
-    if (contact?.name || contact?.notify || contact?.verifiedName) {
-      return contact.name || contact.notify || contact.verifiedName;
+    if (contact?.name || contact?.verifiedName || contact?.notify) {
+      return contact.name || contact.verifiedName || contact.notify;
     }
   }
   // Cross-reference: if jid is a phone JID, check if the @lid alias has a name.
   const mappedLid = jidToLid[jid];
   if (mappedLid) {
     contact = contactStore[mappedLid];
-    if (contact?.name || contact?.notify || contact?.verifiedName) {
-      return contact.name || contact.notify || contact.verifiedName;
+    if (contact?.name || contact?.verifiedName || contact?.notify) {
+      return contact.name || contact.verifiedName || contact.notify;
     }
   }
   return null;
+}
+
+function cleanupOwnNameFromContacts(ownPhone, ownName) {
+  const ownPhoneClean = ownPhone ? cleanJidToPhone(ownPhone).replace(/^\+/, '') : '917262067842';
+  const ownNames = new Set([ownName, 'Jafar Beldar'].filter(Boolean));
+  console.log(`[Bridge] Cleaning up incorrect notify/name entries matching:`, Array.from(ownNames), `(ownPhone: ${ownPhoneClean})`);
+  let updated = false;
+
+  for (const [jid, contact] of Object.entries(contactStore)) {
+    const contactPhoneClean = cleanJidToPhone(jid).replace(/^\+/, '');
+    const isSelf = contactPhoneClean === ownPhoneClean;
+    
+    if (!isSelf) {
+      let contactUpdated = false;
+      if (ownNames.has(contact.notify)) {
+        delete contact.notify;
+        contactUpdated = true;
+      }
+      if (ownNames.has(contact.name)) {
+        delete contact.name;
+        contactUpdated = true;
+      }
+      if (contactUpdated) {
+        database.upsertContact(contact);
+        updated = true;
+      }
+    }
+  }
+
+  for (const [jid, chat] of Object.entries(chatStore)) {
+    const chatPhoneClean = cleanJidToPhone(jid).replace(/^\+/, '');
+    const isSelf = chatPhoneClean === ownPhoneClean;
+    
+    if (!isSelf && ownNames.has(chat.name)) {
+      chat.name = null;
+      const correctName = resolveContactName(jid) || chatDisplayName(jid);
+      chat.name = correctName;
+      database.upsertChat(chat);
+      updated = true;
+    }
+  }
+
+  if (updated) {
+    console.log('[Bridge] Finished cleaning up incorrect names. Broadcasting updated chats.');
+    broadcastChats();
+    saveStore();
+  }
+}
+
+// One-directional version of getPreferredJid for writing incoming chat data:
+// redirects an already-resolved @lid to its phone JID, but never redirects a
+// phone JID back to a @lid (unlike getPreferredJid, which does that for
+// message-routing purposes). Using getPreferredJid here would let a stale
+// @lid-keyed chatStore entry hijack a fresh phone-JID chat update, since
+// getPreferredJid returns the @lid whenever chatStore[lidJid] exists and
+// chatStore[phoneJid] hasn't been created yet.
+function resolveChatStorageId(jid) {
+  if (!jid) return jid;
+  if (jid.endsWith('@lid')) {
+    const phoneJid = lidToJid[jid];
+    if (phoneJid) return phoneJid;
+    resolveLidToPhoneAsync(jid);
+  }
+  return jid;
 }
 
 function getPreferredJid(jid) {
@@ -987,6 +1124,15 @@ function addMessageToStore(msg, options = {}) {
   if (!options.skipDbWrite) {
     database.upsertMessage(finalMsg);
   }
+  // The full decrypted protobuf (raw) is already durably stored in SQLite by
+  // upsertMessage above. Keeping it live in the in-memory messageStore too
+  // means every cached message (up to MAX_MESSAGES_PER_CHAT per chat, across
+  // every chat ever loaded) carries its full raw payload — thumbnails, media
+  // keys, etc. — resident in memory indefinitely. With thousands of chats
+  // this was the dominant contributor to multi-GB heap growth. Consumers
+  // that need raw (edit/delete-for-everyone, media re-download) fall back to
+  // querying it from the database when it's missing here.
+  finalMsg.raw = null;
   return finalMsg;
 }
 
@@ -1288,6 +1434,7 @@ module.exports = {
   toTimestamp,
   resolveLidToPhoneAsync,
   resolveAllLidsFromStore,
+  clearFailedResolutions,
   canEditMessage,
   canDeleteForEveryone,
   findMessageInThread,
@@ -1298,7 +1445,9 @@ module.exports = {
   loadStore,
   sortedChats,
   resolveContactName,
+  cleanupOwnNameFromContacts,
   getPreferredJid,
+  resolveChatStorageId,
   getChatType,
   migrateChatTypes,
   getMessagesForJid,

@@ -36,6 +36,11 @@ let reconnectTimer = null;
 let isConnecting = false;
 let isDisconnecting = false;
 let activeHistorySyncs = 0;
+// Only clear the failed-LID cooldown cache on this process's first successful
+// connect, not on every automatic reconnect — clearing it every time wipes
+// the 1-hour cooldown and re-triggers a full resolution sweep of the entire
+// unresolved-LID backlog each time the socket drops and reconnects.
+let hasClearedFailedResolutionsThisRun = false;
 
 // Retries unresolved @lid mappings periodically since Baileys' lid<->phone
 // mapping store fills in lazily and a single attempt at connect time often
@@ -428,7 +433,11 @@ function handleProtocolMessage(rawMsg, unwrappedMsg, options = {}) {
         if (thread) {
           origMsg = thread.find(m => m.id === targetId);
         }
-        if (!origMsg) {
+        // The in-memory copy has raw stripped (see stores.addMessageToStore)
+        // to keep the resident message cache small, so fall back to the
+        // database — which still holds the full payload — whenever origMsg
+        // wasn't found in memory at all, or was found but lacks raw.
+        if (!origMsg || !origMsg.raw) {
           try {
             const row = database.db.prepare('SELECT payload FROM messages WHERE id = ?').get(targetId);
             if (row) {
@@ -438,7 +447,7 @@ function handleProtocolMessage(rawMsg, unwrappedMsg, options = {}) {
             console.warn('[Bridge] Failed to find message in DB for secretEncryptedMessage:', dbErr.message);
           }
         }
-        
+
         if (origMsg) {
           const messageSecret = getMessageSecret(origMsg.raw);
           console.log('[DEBUG-EDIT] origMsg lookup:', {
@@ -755,6 +764,13 @@ async function connectToWhatsApp() {
         io.emit('status', { status: 'connected', connectorOperatorId, connectorOperatorName, myJid: sock?.user?.id || null });
         console.log('[Bridge] Connected to WhatsApp!');
         await loadGroups();
+        if (sock.user) {
+          stores.cleanupOwnNameFromContacts(sock.user.id, sock.user.name);
+        }
+        if (!hasClearedFailedResolutionsThisRun) {
+          hasClearedFailedResolutionsThisRun = true;
+          stores.clearFailedResolutions();
+        }
         stores.backfillContactNames();
         stores.resolveAllLidsFromStore();
         startLidRetryTimer();
@@ -779,7 +795,7 @@ async function connectToWhatsApp() {
 
         // Upsert verified name and push name into contactStore BEFORE normalizing
         const isGroup = parsedRaw.jid?.endsWith('@g.us');
-        if (parsedRaw.jid && !isGroup) {
+        if (parsedRaw.jid && !isGroup && !msg.key?.fromMe) {
           const verifiedName = msg.verifiedBizName || msg.verifiedName || parsedRaw.verifiedBizName || parsedRaw.verifiedName;
           const pushName = msg.pushName || parsedRaw.pushName;
           if (verifiedName || pushName) {
@@ -987,16 +1003,20 @@ async function connectToWhatsApp() {
         const chatsToSave = [];
         for (const chat of chats || []) {
           const ts = stores.toTimestamp(chat.conversationTimestamp);
-          chatStore[chat.id] = stores.normalizeChat({
-            ...chatStore[chat.id],
-            id: chat.id,
-            name: chat.name || stores.chatDisplayName(chat.id),
-            type: stores.getChatType(chat.id),
+          // Route through the resolved phone JID if this @lid is already
+          // mapped, instead of resurrecting a stale @lid stub that was
+          // already merged away by mergeLidChatToPhone.
+          const targetId = stores.resolveChatStorageId(chat.id);
+          chatStore[targetId] = stores.normalizeChat({
+            ...chatStore[targetId],
+            id: targetId,
+            name: chat.name || stores.chatDisplayName(targetId),
+            type: stores.getChatType(targetId),
             unreadCount: chat.unreadCount || 0,
             timestamp: ts,
-            lastMsg: chatStore[chat.id]?.lastMsg || '',
+            lastMsg: chatStore[targetId]?.lastMsg || '',
           });
-          chatsToSave.push(chatStore[chat.id]);
+          chatsToSave.push(chatStore[targetId]);
         }
         if (chatsToSave.length > 0) {
           database.saveChats(chatsToSave);
@@ -1025,7 +1045,7 @@ async function connectToWhatsApp() {
             // History messages can also carry verified business name certs;
             // capture them the same way the live messages.upsert handler does,
             // otherwise business contacts backfilled via history never get a name.
-            if (!jid.endsWith('@g.us')) {
+            if (!jid.endsWith('@g.us') && !rawMsg.key?.fromMe) {
               const verifiedName = rawMsg.verifiedBizName || rawMsg.verifiedName;
               const pushName = rawMsg.pushName;
               if (verifiedName || pushName) {
@@ -1213,6 +1233,12 @@ async function connectToWhatsApp() {
         if (activeHistorySyncs <= 0) {
           activeHistorySyncs = 0;
           stores.updateSyncState({ syncingHistory: false });
+          // History sync completes on every reconnect, not just first login —
+          // clearing the failed-resolution cache here used to wipe the 1-hour
+          // cooldown on every reconnect, causing the entire backlog of
+          // unresolvable LIDs to be retried from scratch each time. Just let
+          // the natural cooldown (and the periodic retry timer) govern this.
+          stores.resolveAllLidsFromStore();
         }
       }
     });
@@ -1220,15 +1246,19 @@ async function connectToWhatsApp() {
     sock.ev.on('chats.upsert', (chats) => {
       const chatsToSave = [];
       for (const chat of chats) {
-        chatStore[chat.id] = stores.normalizeChat({
-          ...chatStore[chat.id],
-          id: chat.id,
-          name: chat.name || stores.chatDisplayName(chat.id),
-          type: stores.getChatType(chat.id),
+        // Route through the resolved phone JID if this @lid is already
+        // mapped, instead of resurrecting a stale @lid stub that was
+        // already merged away by mergeLidChatToPhone.
+        const targetId = stores.resolveChatStorageId(chat.id);
+        chatStore[targetId] = stores.normalizeChat({
+          ...chatStore[targetId],
+          id: targetId,
+          name: chat.name || stores.chatDisplayName(targetId),
+          type: stores.getChatType(targetId),
           unreadCount: chat.unreadCount || 0,
           timestamp: stores.toTimestamp(chat.conversationTimestamp),
         });
-        chatsToSave.push(chatStore[chat.id]);
+        chatsToSave.push(chatStore[targetId]);
       }
       if (chatsToSave.length > 0) {
         database.saveChats(chatsToSave);

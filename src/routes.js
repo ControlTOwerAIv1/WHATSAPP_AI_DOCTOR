@@ -898,6 +898,16 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       });
     }
 
+    // The in-memory copy has raw stripped (see stores.addMessageToStore) to
+    // keep the resident message cache small — fetch it from the database,
+    // which still holds the full payload, when we actually need it.
+    if (!msg.raw) {
+      const row = database.db.prepare('SELECT payload FROM messages WHERE id = ?').get(id);
+      if (row) {
+        msg = stores.normalizeMessageRecord(JSON.parse(row.payload));
+      }
+    }
+
     if (!msg.raw) {
       return res.status(400).json({ error: 'Original message data not available in database' });
     }

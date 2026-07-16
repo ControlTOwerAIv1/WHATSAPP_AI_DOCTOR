@@ -10,19 +10,24 @@
  * and src/routes.js (REST + Socket.IO API), then starts listening.
  */
 
+const path = require('path');
+
+const ROOT_DIR = __dirname;
+
+// Must run before any other module logs anything, so nothing is missed.
+const { setupFileLogging } = require('./src/logging');
+setupFileLogging(ROOT_DIR);
+
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const fs = require('fs');
-const path = require('path');
 
 const { RelayDatabase } = require('./src/db');
 const stores = require('./src/stores');
 const whatsapp = require('./src/whatsapp');
 const { registerRoutes } = require('./src/routes');
-
-const ROOT_DIR = __dirname;
 
 const app = express();
 const httpServer = createServer(app);
