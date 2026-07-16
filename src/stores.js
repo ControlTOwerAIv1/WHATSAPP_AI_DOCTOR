@@ -212,7 +212,8 @@ function toTimestamp(ts) {
   return 0;
 }
 
-async function resolveLidToPhoneAsync(lid) {
+async function resolveLidToPhoneAsync(lid, options = {}) {
+  const { silent = false, deferSave = false } = options;
   if (!lid || !lid.endsWith('@lid')) return null;
   if (lidToJid[lid]) return lidToJid[lid];
   if (!sock || !sock.user) return null;
@@ -225,17 +226,20 @@ async function resolveLidToPhoneAsync(lid) {
   pendingResolutions.add(lid);
   console.log(`[Bridge] Starting resolution for LID: ${lid}`);
 
+  const markFailed = () => {
+    failedResolutions.set(lid, Date.now());
+    if (!deferSave) saveFailedResolutions();
+  };
+
   try {
     if (!sock.signalRepository) {
       console.log(`[Bridge] Cannot resolve LID ${lid}: sock.signalRepository is undefined.`);
-      failedResolutions.set(lid, Date.now());
-      saveFailedResolutions();
+      markFailed();
       return null;
     }
     if (!sock.signalRepository.lidMapping) {
       console.log(`[Bridge] Cannot resolve LID ${lid}: sock.signalRepository.lidMapping is undefined.`);
-      failedResolutions.set(lid, Date.now());
-      saveFailedResolutions();
+      markFailed();
       return null;
     }
 
@@ -261,19 +265,24 @@ async function resolveLidToPhoneAsync(lid) {
       // Merge LID chat and messages into PN chat
       mergeLidChatToPhone(lid, pn);
 
-      if (io) io.emit('chat_merged', { lid, jid: pn });
-      broadcastChats();
+      // A bulk sweep (resolveAllLidsFromStore) resolves many LIDs back to
+      // back - broadcasting the full chat list (every chat, every connected
+      // socket) after each individual one made the server unresponsive for
+      // the whole duration of the sweep. Callers doing bulk work pass
+      // silent:true and broadcast once themselves when the sweep finishes.
+      if (!silent) {
+        if (io) io.emit('chat_merged', { lid, jid: pn });
+        broadcastChats();
+      }
 
       return pn;
     } else {
       // Cache the failure so we don't retry for LID_RETRY_COOLDOWN_MS
-      failedResolutions.set(lid, Date.now());
-      saveFailedResolutions();
+      markFailed();
     }
   } catch (e) {
     console.warn(`[Bridge] Error resolving LID ${lid}:`, e.message);
-    failedResolutions.set(lid, Date.now());
-    saveFailedResolutions();
+    markFailed();
   } finally {
     pendingResolutions.delete(lid);
   }
@@ -347,8 +356,6 @@ function mergeLidChatToPhone(lid, pn) {
   }
 }
 
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 async function resolveAllLidsFromStore() {
   if (!sock || !sock.user) return;
   // Reconnect and history-sync-completion can both trigger this close
@@ -385,11 +392,21 @@ async function resolveAllLidsFromStore() {
 
     let resolvedCount = 0;
     for (const jid of [...fresh, ...stale]) {
-      if (!sock || !sock.user) return;
-      const pn = await resolveLidToPhoneAsync(jid);
+      if (!sock || !sock.user) break;
+      // getPNForLID is a local lookup against Baileys' own auth-state cache,
+      // not a network call - there's no rate limit to respect here. silent
+      // skips the per-item full chat-list broadcast (see resolveLidToPhoneAsync)
+      // and deferSave skips the per-item synchronous disk write; both are
+      // done once below instead. The 500ms-per-item delay this used to have
+      // meant a backlog of ~100+ LIDs made the server unresponsive for over a
+      // minute on every reconnect - a bare await still yields to the event
+      // loop between iterations without adding real wall-clock delay.
+      const pn = await resolveLidToPhoneAsync(jid, { silent: true, deferSave: true });
       if (pn) resolvedCount++;
-      await delay(500);
+      await Promise.resolve();
     }
+    saveFailedResolutions();
+    if (resolvedCount > 0) broadcastChats();
 
     if (resolvedCount > 0) {
       console.log(`[Bridge] Background resolution finished. Resolved ${resolvedCount} LIDs to phone numbers.`);
@@ -691,6 +708,16 @@ function loadStore() {
       // in memory for every message across every chat loaded at boot.
       msg.raw = null;
       messageStore[msg.jid].push(msg);
+    }
+    // Baileys' chat-metadata sync never carries message text, so a chat's
+    // lastMsg is otherwise only set when a *new* message event touches it
+    // this session. Chats with plenty of history already in messageStore
+    // (loaded just above) but no new activity since boot would otherwise
+    // show a blank preview forever. allMessagesStmt orders by jid, timestamp,
+    // so each messageStore[jid] here is already ascending - last entry is the
+    // true latest.
+    for (const jid of Object.keys(messageStore)) {
+      syncChatPreviewFromLastMessage(jid);
     }
     connectorOperatorId = database.getMetadata('connector_operator_id');
     connectorOperatorName = database.getMetadata('connector_operator_name');
@@ -1110,9 +1137,33 @@ function addMessageToStore(msg, options = {}) {
       edits: (existing.edits && existing.edits.length > 0) ? existing.edits : normalized.edits,
       clientTempId: existing.clientTempId || normalized.clientTempId,
     };
-    messageStore[jid][existingIndex] = finalMsg;
+  }
+  // finalMsg (with raw intact) is what gets persisted to the database, either
+  // right here or - when skipDbWrite is set (bulk history sync) - later by
+  // the caller collecting return values into its own array and calling
+  // database.saveMessages(). Nulling raw on this same object before it was
+  // returned meant history-synced messages (skipDbWrite path) never got their
+  // raw payload written to the database at all - stripped before it ever
+  // reached upsertMessage. The in-memory resident copy (messageStore[jid])
+  // needs to stay lean (see reasoning below) but must be a separate object
+  // from what's returned/persisted.
+  if (!options.skipDbWrite) {
+    database.upsertMessage(finalMsg);
+  }
+  // The full decrypted protobuf (raw) is already durably stored in SQLite
+  // (above, or via the caller's deferred saveMessages). Keeping it live in
+  // the in-memory messageStore too means every cached message (up to
+  // MAX_MESSAGES_PER_CHAT per chat, across every chat ever loaded) carries
+  // its full raw payload - thumbnails, media keys, etc. - resident in memory
+  // indefinitely. With thousands of chats this was the dominant contributor
+  // to multi-GB heap growth. Consumers that need raw (edit/delete-for-
+  // everyone, media re-download) fall back to querying it from the database
+  // when it's missing here.
+  const memoryMsg = finalMsg.raw !== null ? { ...finalMsg, raw: null } : finalMsg;
+  if (existingIndex >= 0) {
+    messageStore[jid][existingIndex] = memoryMsg;
   } else {
-    messageStore[jid].push(normalized);
+    messageStore[jid].push(memoryMsg);
   }
   messageStore[jid].sort((a, b) => toTimestamp(a.timestamp) - toTimestamp(b.timestamp));
   // Skipped for on-demand history backfill ("load older messages"): trimming
@@ -1121,18 +1172,6 @@ function addMessageToStore(msg, options = {}) {
   if (!options.skipTrim && messageStore[jid].length > CONFIG.MAX_MESSAGES_PER_CHAT) {
     messageStore[jid] = messageStore[jid].slice(-CONFIG.MAX_MESSAGES_PER_CHAT);
   }
-  if (!options.skipDbWrite) {
-    database.upsertMessage(finalMsg);
-  }
-  // The full decrypted protobuf (raw) is already durably stored in SQLite by
-  // upsertMessage above. Keeping it live in the in-memory messageStore too
-  // means every cached message (up to MAX_MESSAGES_PER_CHAT per chat, across
-  // every chat ever loaded) carries its full raw payload — thumbnails, media
-  // keys, etc. — resident in memory indefinitely. With thousands of chats
-  // this was the dominant contributor to multi-GB heap growth. Consumers
-  // that need raw (edit/delete-for-everyone, media re-download) fall back to
-  // querying it from the database when it's missing here.
-  finalMsg.raw = null;
   return finalMsg;
 }
 
@@ -1263,7 +1302,7 @@ function ensureChatLockForOperator(jid, operator) {
   return { ok: true, chat };
 }
 
-function updateChatPreview(jid, lastMsg, timestamp) {
+function updateChatPreview(jid, lastMsg, timestamp, fromMe = true, status = null) {
   const chat = ensureChatExists(jid);
   const resolved = resolveContactName(jid);
   if (resolved) {
@@ -1272,6 +1311,10 @@ function updateChatPreview(jid, lastMsg, timestamp) {
   chat.lastMsg = lastMsg || '';
   chat.timestamp = toTimestamp(timestamp);
   chat.unreadCount = 0;
+  // WhatsApp only shows delivery/read ticks on the chat-list preview for
+  // messages we sent, never for ones we received.
+  chat.lastMsgFromMe = Boolean(fromMe);
+  chat.lastMsgStatus = fromMe ? (status ?? null) : null;
 
   // Also clear unread count for alternate LID/JID mapping if it exists
   const altJid = jid.endsWith('@lid') ? lidToJid[jid] : jidToLid[jid];
@@ -1280,6 +1323,24 @@ function updateChatPreview(jid, lastMsg, timestamp) {
   }
 
   return chat;
+}
+
+// Refreshes a chat's list-preview fields (text, timestamp, sent/read ticks)
+// from the actual latest message in messageStore, rather than leaving them
+// however Baileys' bare chat-metadata sync left them (which carries no
+// message text at all). messageStore[jid] is kept fully sorted ascending by
+// addMessageToStore, so the last entry is always the true latest known
+// message for that thread regardless of which sync batch touched it.
+function syncChatPreviewFromLastMessage(jid) {
+  const msgs = messageStore[jid];
+  if (!msgs || msgs.length === 0) return;
+  const last = msgs[msgs.length - 1];
+  const chat = ensureChatExists(jid);
+  chat.lastMsg = last.content || '';
+  chat.timestamp = toTimestamp(last.timestamp);
+  chat.lastMsgFromMe = Boolean(last.fromMe);
+  chat.lastMsgStatus = last.fromMe ? (last.status ?? null) : null;
+  database.upsertChat(chat);
 }
 
 async function recordOutboundMessage({ jid, operator, result, message }) {
@@ -1310,7 +1371,7 @@ async function recordOutboundMessage({ jid, operator, result, message }) {
     status: result?.status !== undefined ? result.status : 1,
     raw: result?.message || null,
   });
-  updateChatPreview(jid, sentMsg.content, timestamp);
+  updateChatPreview(jid, sentMsg.content, timestamp, true, sentMsg.status);
   saveStore();
   broadcastChats();
   io.emit('message', sentMsg);
@@ -1364,7 +1425,30 @@ function unflagMessage(messageId) {
 }
 
 function getFlaggedMessages() {
-  return Object.values(flaggedMessages).sort((a, b) => b.flaggedAt - a.flaggedAt);
+  // The stored flag record only ever held metadata (who flagged it, when,
+  // any note) - never the message itself - so the panel had nothing to show
+  // but the raw messageId. Look the actual message up for display, falling
+  // back to the database in case it's aged out of the in-memory cache.
+  return Object.values(flaggedMessages)
+    .sort((a, b) => b.flaggedAt - a.flaggedAt)
+    .map((flag) => {
+      let msg = findMessageInThread(flag.jid, flag.messageId);
+      if (!msg) {
+        try {
+          const row = database.db.prepare('SELECT payload FROM messages WHERE id = ?').get(flag.messageId);
+          if (row) msg = JSON.parse(row.payload);
+        } catch (e) {
+          // Non-critical - fall through with whatever we have.
+        }
+      }
+      return {
+        ...flag,
+        content: msg?.content || null,
+        mediaType: msg?.mediaType || null,
+        sender: msg?.sender || null,
+        deleted: Boolean(msg?.deleted),
+      };
+    });
 }
 
 function getMessageFlag(messageId) {
@@ -1427,6 +1511,7 @@ module.exports = {
   chatStore,
   lidToJid,
   jidToLid,
+  operatorReads,
 
   clearInMemoryStores,
   addLidMapping,
@@ -1462,6 +1547,7 @@ module.exports = {
   releaseChat,
   ensureChatLockForOperator,
   updateChatPreview,
+  syncChatPreviewFromLastMessage,
   recordOutboundMessage,
   sendLockError,
   getSyncState,

@@ -29,6 +29,29 @@
     let lastStatusClass = 'disconnected';
     let lastStatusText = 'Offline';
 
+    // ─── WhatsApp-style Text Formatting ─────────────────────────────────────────────
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    // Converts WhatsApp markup (*bold*, _italic_, ~strike~, ```mono```) in plain
+    // text into safe HTML. Input is HTML-escaped first, so this is the only place
+    // message text should be turned into innerHTML.
+    function formatWhatsAppText(text) {
+      let escaped = escapeHtml(text == null ? '' : text);
+      // Marker must hug non-whitespace on its inner edge (WhatsApp's own rule) so
+      // stray characters like "5 * 3" or "a_b" don't get treated as formatting.
+      escaped = escaped.replace(/```([^\s`][\s\S]*?[^\s`]|[^\s`])```/g, '<span class="fmt-mono">$1</span>');
+      escaped = escaped.replace(/\*([^\s*][^*]*?[^\s*]|[^\s*])\*/g, '<b>$1</b>');
+      escaped = escaped.replace(/_([^\s_][^_]*?[^\s_]|[^\s_])_/g, '<i>$1</i>');
+      escaped = escaped.replace(/~([^\s~][^~]*?[^\s~]|[^\s~])~/g, '<s>$1</s>');
+      return escaped.replace(/\n/g, '<br>');
+    }
+
     function currentOperator() {
       return { id: operatorId, name: operatorName || operatorId || 'Unknown' };
     }
@@ -134,13 +157,190 @@
       throw new Error(`Bridge returned non-JSON response (${res.status}): ${snippet || 'empty body'}`);
     }
 
-    function autoResize(el) {
-      el.style.height = 'auto';
-      el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+    // ─── Composer (contenteditable messageInput) ────────────────────────────────────
+    // Reads plain text back out of the composer div, treating <br> as '\n' (matches
+    // how formatWhatsAppText() turns '\n' into <br> when rendering).
+    function getComposerText(el) {
+      return el.innerText.replace(/\r\n/g, '\n');
+    }
+
+    function clearComposer(el) {
+      el.innerHTML = '';
+    }
+
+    // Full programmatic replace (edit-mode load, etc.) - caret goes to the end,
+    // matching the old textarea's behavior when .value was assigned.
+    function setComposerText(el, text) {
+      el.innerHTML = formatWhatsAppText(text || '');
+      el.focus();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+
+    // Walks the composer's DOM to find the plain-text caret offset (treating <br> as
+    // one character, matching getComposerText). Returns null if there's no selection
+    // inside the element (e.g. a programmatic call while unfocused).
+    function getComposerCaretOffset(el) {
+      const sel = window.getSelection();
+      if (!sel.rangeCount || !el.contains(sel.focusNode)) return null;
+      const range = sel.getRangeAt(0);
+      let text = '';
+      let caret = null;
+
+      function walk(node) {
+        if (caret !== null) return;
+        if (node.nodeType === Node.TEXT_NODE) {
+          if (node === range.endContainer) caret = text.length + range.endOffset;
+          text += node.nodeValue;
+          return;
+        }
+        if (node.nodeName === 'BR') {
+          if (node === range.endContainer) caret = text.length;
+          text += '\n';
+          return;
+        }
+        const children = node.childNodes;
+        for (let i = 0; i < children.length; i++) {
+          if (node === range.endContainer && range.endOffset === i) caret = text.length;
+          walk(children[i]);
+          if (caret !== null) return;
+        }
+        if (node === range.endContainer && range.endOffset === children.length) caret = text.length;
+      }
+      walk(el);
+      return caret === null ? text.length : caret;
+    }
+
+    // Inverse of getComposerCaretOffset: places the caret at a plain-text character offset.
+    function setComposerCaretOffset(el, offset) {
+      let remaining = offset;
+      let target = null;
+
+      function walk(node) {
+        if (target) return;
+        if (node.nodeType === Node.TEXT_NODE) {
+          if (remaining <= node.nodeValue.length) {
+            target = { node, offset: remaining };
+          } else {
+            remaining -= node.nodeValue.length;
+          }
+          return;
+        }
+        if (node.nodeName === 'BR') {
+          remaining -= 1;
+          return;
+        }
+        for (const child of node.childNodes) {
+          walk(child);
+          if (target) return;
+        }
+      }
+      walk(el);
+
+      const range = document.createRange();
+      if (target) {
+        range.setStart(target.node, Math.max(0, Math.min(target.offset, target.node.nodeValue.length)));
+      } else {
+        range.selectNodeContents(el);
+      }
+      range.collapse(true);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+
+    // Re-renders the composer's markup live as the operator types, preserving caret position.
+    function handleComposerInput(el) {
+      if (el.dataset.composing === '1') return; // wait for IME composition to finish
+      const caret = getComposerCaretOffset(el);
+      const text = getComposerText(el);
+      el.innerHTML = formatWhatsAppText(text);
+      if (caret !== null) setComposerCaretOffset(el, caret);
+    }
+
+    function handleComposerCompositionEnd(el) {
+      el.dataset.composing = '0';
+      handleComposerInput(el);
     }
 
     function handleKey(e) {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      if (e.shiftKey) {
+        document.execCommand('insertLineBreak');
+      } else {
+        sendMessage();
+      }
+    }
+
+    // --- Paste handling: images become pending attachments (Bug 21), everything
+    // else is inserted as plain text so rich HTML from other apps can't inject
+    // stray markup into the composer.
+    function handleComposerPaste(e) {
+      let hasImage = false;
+      let imageFiles = [];
+
+      if (e.clipboardData && e.clipboardData.files && e.clipboardData.files.length > 0) {
+        for (let i = 0; i < e.clipboardData.files.length; i++) {
+          if (e.clipboardData.files[i].type.startsWith('image/')) {
+            imageFiles.push(e.clipboardData.files[i]);
+            hasImage = true;
+          }
+        }
+      }
+
+      if (!hasImage && e.clipboardData && e.clipboardData.items) {
+        const items = e.clipboardData.items;
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].type.startsWith('image/')) {
+            const file = items[i].getAsFile();
+            if (file) {
+              imageFiles.push(file);
+              hasImage = true;
+            }
+          }
+        }
+      }
+
+      e.preventDefault();
+
+      if (hasImage) {
+        for (let i = 0; i < imageFiles.length; i++) {
+          let file = imageFiles[i];
+          if (!file.name || file.name === 'image.png' || file.name === 'blob' || file.name.startsWith('image')) {
+            const ext = file.type.split('/')[1] || 'png';
+            const newName = `screenshot-${Date.now()}-${i}.${ext}`;
+            try {
+              file = new File([file], newName, { type: file.type });
+            } catch (err) {
+              console.error("Error creating new File:", err);
+            }
+          }
+
+          if (pendingMediaList.length + 1 > 100) {
+            showToast('Maximum 100 attachments allowed at a time', 'error');
+            break;
+          }
+
+          const previewUrl = URL.createObjectURL(file);
+          pendingMediaList.push({
+            id: genTempId(),
+            file: file,
+            type: 'image',
+            previewUrl: previewUrl
+          });
+        }
+        renderMediaPreview();
+        return;
+      }
+
+      const pastedText = (e.clipboardData || window.clipboardData).getData('text/plain');
+      if (!pastedText) return;
+      document.execCommand('insertText', false, pastedText);
     }
 
     function formatTime(d) {
@@ -153,6 +353,51 @@
       const n = Number(ts) || 0;
       if (!n) return 0;
       return n > 100000000000 ? Math.floor(n / 1000) : n;
+    }
+
+    function dateKeyForTimestamp(ts) {
+      const seconds = unixSeconds(ts);
+      if (!seconds) return '';
+      const d = new Date(seconds * 1000);
+      return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    }
+
+    function formatDateSeparatorLabel(ts) {
+      const seconds = unixSeconds(ts);
+      if (!seconds) return '';
+      const d = new Date(seconds * 1000);
+      const startOfDay = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
+      const diffDays = Math.round((startOfDay(new Date()) - startOfDay(d)) / 86400000);
+      if (diffDays === 0) return 'Today';
+      if (diffDays === 1) return 'Yesterday';
+      return d.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
+    }
+
+    function formatFullDateTime(ts) {
+      const seconds = unixSeconds(ts);
+      if (!seconds) return '';
+      return new Date(seconds * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    }
+
+    // Rebuilt fresh on every message-list change (initial open, load-older,
+    // live message) rather than tracked incrementally through each insertion
+    // path (append/prepend both mutate the DOM directly) - a full rescan over
+    // .message-row is cheap at the message counts this app renders and avoids
+    // subtly wrong separator placement when prepending older batches.
+    function refreshDateSeparators() {
+      const area = document.getElementById('messagesArea');
+      if (!area) return;
+      area.querySelectorAll('.date-separator').forEach(el => el.remove());
+      let lastDateKey = null;
+      area.querySelectorAll('.message-row').forEach(row => {
+        const dateKey = dateKeyForTimestamp(row.dataset.timestamp);
+        if (!dateKey || dateKey === lastDateKey) return;
+        lastDateKey = dateKey;
+        const sep = document.createElement('div');
+        sep.className = 'date-separator';
+        sep.innerHTML = `<span class="date-separator-text">${formatDateSeparatorLabel(row.dataset.timestamp)}</span>`;
+        area.insertBefore(sep, row);
+      });
     }
 
     function canEditMessage(msg) {
@@ -189,6 +434,35 @@
       return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + formatTime(d);
     }
 
+    function fmtPhone(str) {
+      const m = str.match(/^\+(\d+)$/);
+      if (!m) return str;
+      const d = m[1];
+      if (d.length <= 2) return str;
+      const cc3 = new Set([
+        '212','213','216','218','220','221','222','223','224','225','226','227','228','229',
+        '230','231','232','233','234','235','236','237','238','239','240','241','242','243',
+        '244','245','246','247','248','249','250','251','252','253','254','255','256','257',
+        '258','260','261','262','263','264','265','266','267','268','269','290','291','297',
+        '298','299','350','351','352','353','354','355','356','357','358','359',
+        '370','371','372','373','374','375','376','377','378','379','380','381','382','383',
+        '385','386','387','389','420','421','423','500','501','502','503','504','505','506',
+        '507','508','509','590','591','592','593','594','595','596','597','598','599',
+        '670','672','673','674','675','676','677','678','679','680','681','682','683','685',
+        '686','687','688','689','690','691','692','808','850','852','853','855','856','870',
+        '878','880','881','882','883','886','960','961','962','963','964','965','966','967',
+        '968','970','971','972','973','974','975','976','977','992','993','994','995','996',
+        '997','998'
+      ]);
+      if ((d[0] === '1' || d[0] === '7') && d.length >= 2)
+        return '+'+d[0]+' '+d.slice(1);
+      if (d.length >= 4 && cc3.has(d.slice(0,3)))
+        return '+'+d.slice(0,3)+' '+d.slice(3);
+      if (d.length >= 3)
+        return '+'+d.slice(0,2)+' '+d.slice(2);
+      return str;
+    }
+
     function cleanJid(val) {
       if (!val) return '';
       val = String(val).trim();
@@ -198,7 +472,7 @@
         const domain = parts[1];
         if (domain === 's.whatsapp.net') {
           const num = parts[0].split(':')[0];
-          return num.startsWith('+') ? num : '+' + num;
+          return fmtPhone(num.startsWith('+') ? num : '+' + num);
         }
         if (domain === 'lid') {
           return 'LID: ' + parts[0];
@@ -209,12 +483,12 @@
         if (/^[a-zA-Z]/.test(val)) return val;
         const num = val.split(':')[0];
         if (/^\d{8,}$/.test(num)) {
-          return '+' + num;
+          return fmtPhone('+' + num);
         }
         return num;
       }
       if (/^\d{8,}$/.test(val)) {
-        return '+' + val;
+        return fmtPhone('+' + val);
       }
       return val;
     }
@@ -351,15 +625,15 @@
       const input = document.getElementById('messageInput');
       const sendBtn = document.getElementById('sendBtn');
       const attachBtn = document.getElementById('attachBtn');
-      input.disabled = disabled;
+      input.contentEditable = disabled ? 'false' : 'true';
       sendBtn.disabled = disabled;
       attachBtn.disabled = disabled;
       if (disabled) {
-        input.placeholder = `Locked by ${activeChat.assignedOperatorName || activeChat.assignedOperatorId}`;
+        input.dataset.placeholder = `Locked by ${activeChat.assignedOperatorName || activeChat.assignedOperatorId}`;
       } else if (pendingMediaList.length > 0) {
-        input.placeholder = pendingMediaList[0].type === 'document' ? 'Document ready to send…' : 'Add a caption…';
+        input.dataset.placeholder = pendingMediaList[0].type === 'document' ? 'Document ready to send…' : 'Add a caption…';
       } else {
-        input.placeholder = 'Type a message… (Enter to send)';
+        input.dataset.placeholder = 'Type a message… (Enter to send)';
       }
     }
 
@@ -457,10 +731,10 @@
           let html = '';
           if (type === 'image') {
             html = `<img class="msg-image" src="${absoluteMediaUrl}" alt="Image" onclick="openLightbox('${absoluteMediaUrl}')">
-                    <div class="msg-text">${content}</div>`;
+                    <div class="msg-text">${formatWhatsAppText(content)}</div>`;
           } else if (type === 'video') {
             html = `<video class="msg-video" controls><source src="${absoluteMediaUrl}"></video>
-                    <div class="msg-text">${content}</div>`;
+                    <div class="msg-text">${formatWhatsAppText(content)}</div>`;
           } else if (type === 'audio') {
             html = `<audio class="msg-audio" controls><source src="${absoluteMediaUrl}"></audio>`;
           } else if (type === 'document') {
@@ -554,6 +828,32 @@
       });
     }
 
+    // Mirrors the tick logic used for in-conversation messages (see the
+    // "Render status ticks for outgoing messages" block below), scaled down
+    // for the sidebar preview line. Only shown for messages we sent - WhatsApp
+    // never shows ticks on the list preview for messages we received.
+    function getChatListTick(chat) {
+      if (!chat.lastMsgFromMe) return '';
+      const status = chat.lastMsgStatus;
+      let icon = '';
+      let cls = 'status-sent';
+      if (status === 0 || status === 'failed') {
+        icon = '<svg class="tick-svg" viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="7"/><line x1="8" y1="5" x2="8" y2="9"/><line x1="8" y1="12" x2="8.01" y2="12" stroke-width="2.5"/></svg>';
+        cls = 'status-failed';
+      } else if (status === 3 || status === 'delivered') {
+        icon = '<svg class="tick-svg" viewBox="0 0 19 11" width="13" height="8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 5.5L5 9.5L10 4.5 M8 5.5L11.5 9L18 1.5"/></svg>';
+        cls = 'status-delivered';
+      } else if (status === 4 || status === 'read' || status === 5 || status === 'played') {
+        icon = '<svg class="tick-svg" viewBox="0 0 19 11" width="13" height="8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 5.5L5 9.5L10 4.5 M8 5.5L11.5 9L18 1.5"/></svg>';
+        cls = 'status-read';
+      } else {
+        // status 1/2 (pending/sent) and any unrecognized value fall back to a single tick.
+        icon = '<svg class="tick-svg" viewBox="0 0 16 11" width="11" height="8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 5.5L5 9.5L15 1.5"/></svg>';
+        cls = 'status-sent';
+      }
+      return `<span class="msg-status-ticks ${cls}" style="display:inline-block;">${icon}</span>`;
+    }
+
     function renderChatList(chats) {
       allChats = chats || [];
       updateDocumentTitle();
@@ -599,6 +899,7 @@
           }
         }
 
+        const previewTick = getChatListTick(chat);
         const isVerified = Boolean(chat.verifiedName);
         const verifiedBadge = isVerified ? `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="#0095f6" viewBox="0 0 16 16" style="margin-left:4px;vertical-align:middle;flex-shrink:0;" title="Verified Business"><path d="M10.067.87a2.89 2.89 0 0 0-4.134 0l-.622.622-2.08-.02a2.89 2.89 0 0 0-2.91 2.91l.02 2.08-.622.622a2.89 2.89 0 0 0 0 4.134l.622.622-.02 2.08a2.89 2.89 0 0 0 2.91 2.91l2.08-.02.622.622a2.89 2.89 0 0 0 4.134 0l.622-.622 2.08.02a2.89 2.89 0 0 0 2.91-2.91l-.02-2.08.622-.622a2.89 2.89 0 0 0 0-4.134l-.622-.622.02-2.08a2.89 2.89 0 0 0-2.91-2.91l-2.08.02-.622-.622zM8.14 10.146a.75.75 0 0 1-1.079-.02L4.697 7.731a.75.75 0 1 1 1.071-1.05l1.829 1.828L11.83 4.5a.75.75 0 1 1 1.06 1.06L8.14 10.147z"/></svg>` : '';
 
@@ -625,7 +926,7 @@
           </div>
           ${assigneeLabel}
         </div>
-        <div class="chat-preview">${chat.lastMsg || chat.preview || ''}</div>
+        <div class="chat-preview">${previewTick}${chat.lastMsg || chat.preview || ''}</div>
       </div>
       ${chat.unreadCount ? `<div class="unread-badge">${chat.unreadCount}</div>` : ''}
     `;
@@ -666,7 +967,7 @@
         <div class="chat-name-row">
           <div class="chat-name">${cleanName}</div>
         </div>
-        <div class="chat-preview">+${contact.phone.split(':')[0]}</div>
+        <div class="chat-preview">${fmtPhone('+' + contact.phone.split(':')[0])}</div>
       </div>
     `;
         list.appendChild(item);
@@ -877,21 +1178,21 @@
               const dateStr = formatDate(m.timestamp * 1000);
               const sender = m.fromMe ? 'You' : (m.sender || 'Them');
               
-              let bodyText = m.content || '';
+              let bodyText = formatWhatsAppText(m.content || '');
               if (m.mediaType && m.mediaType !== 'text') {
                 const mediaIcons = { image: '🖼️ Image', video: '🎥 Video', voice: '🎤 Voice', audio: '🎵 Audio', document: '📄 Document', sticker: '😊 Sticker', location: '📍 Location' };
                 const label = mediaIcons[m.mediaType] || m.mediaType;
-                bodyText = `<span style="opacity:0.7">[${label}]</span> ${bodyText}`.trim();
+                bodyText = `<span style="opacity:0.7">[${escapeHtml(label)}]</span> ${bodyText}`.trim();
               }
-              
+
               // Escape quotes in parameters
               const safeMsgId = m.id.replace(/'/g, "\\'");
-              
+
               return `
                 <div class="chat-search-result-item" onclick="scrollToOrLoadMessage('${safeMsgId}', ${m.timestamp})">
                   <div class="chat-search-result-header">
-                    <span class="chat-search-result-sender">${sender}</span>
-                    <span class="chat-search-result-time">${dateStr}</span>
+                    <span class="chat-search-result-sender">${escapeHtml(sender)}</span>
+                    <span class="chat-search-result-time">${escapeHtml(dateStr)}</span>
                   </div>
                   <div class="chat-search-result-body">${bodyText}</div>
                 </div>
@@ -963,6 +1264,7 @@
           msgs.reverse().forEach(m => {
             appendMessage(normalizeMessage(m), false, true);
           });
+          refreshDateSeparators();
 
           el = document.getElementById('msg-' + messageId);
           if (el) {
@@ -1086,7 +1388,7 @@
             </div>`;
           }
           return `<img class="msg-image" src="${msg.mediaUrl}" alt="Image" onclick="openLightbox('${msg.mediaUrl}')">
-              <div class="msg-text">${msg.content || ''}</div>`;
+              <div class="msg-text">${formatWhatsAppText(msg.content || '')}</div>`;
         case 'video':
           if (!hasMedia) {
             return `<div class="msg-media-placeholder" onclick="downloadMediaOnDemand('${msg.jid}', '${msg.id}', this, 'video')">
@@ -1095,7 +1397,7 @@
             </div>`;
           }
           return `<video class="msg-video" controls><source src="${msg.mediaUrl}"></video>
-              <div class="msg-text">${msg.content || ''}</div>`;
+              <div class="msg-text">${formatWhatsAppText(msg.content || '')}</div>`;
         case 'voice':
         case 'audio':
           if (!hasMedia) {
@@ -1136,7 +1438,7 @@
         <div><div style="font-size:13px;font-weight:600">${msg.content || 'Location'}</div><div style="font-size:11px;opacity:0.6">Open in Maps</div></div>
       </a>`;
         default:
-          return `<div class="msg-text">${msg.content || ''}</div>`;
+          return `<div class="msg-text">${formatWhatsAppText(msg.content || '')}</div>`;
       }
     }
 
@@ -1152,9 +1454,10 @@
       };
       const icon = mediaIcons[msg.quotedMediaType] || '';
       const quotedSenderDisplay = msg.quotedSender ? cleanJid(msg.quotedSender) : (msg.fromMe ? 'You' : 'Them');
-      const quotedText = msg.quotedContent
+      const quotedTextRaw = msg.quotedContent
         ? (msg.quotedContent.length > 80 ? msg.quotedContent.slice(0, 80) + '…' : msg.quotedContent)
         : (msg.quotedMediaType && msg.quotedMediaType !== 'text' ? `${icon} ${msg.quotedMediaType}` : '…');
+      const quotedText = formatWhatsAppText(quotedTextRaw);
       const mediaTag = (msg.quotedMediaType && msg.quotedMediaType !== 'text')
         ? `<span class="msg-quoted-media-tag">${icon} ${msg.quotedMediaType.charAt(0).toUpperCase() + msg.quotedMediaType.slice(1)}</span> `
         : '';
@@ -1162,7 +1465,7 @@
         <div class="msg-quoted" onclick="scrollToMessage('${msg.quotedMessageId}')">
           <div class="msg-quoted-accent"></div>
           <div class="msg-quoted-body">
-            <div class="msg-quoted-sender">${quotedSenderDisplay}</div>
+            <div class="msg-quoted-sender">${escapeHtml(quotedSenderDisplay)}</div>
             <div class="msg-quoted-text">${mediaTag}${quotedText}</div>
           </div>
         </div>`;
@@ -1255,6 +1558,7 @@
       const cleanInitialName = cleanJid(initialName).replace('+', '');
       const initial = (cleanInitialName || '?')[0].toUpperCase();
       const timeStr = msg.time || (msg.timestamp ? formatTime(new Date(msg.timestamp * 1000)) : '');
+      const fullDateTimeStr = msg.timestamp ? formatFullDateTime(msg.timestamp) : '';
       const editedMark = msg.editedAt ? '<div class="msg-edited">(edited)</div>' : '';
       const showSender = (!outgoing && isGroup) || (outgoing && Boolean(msg.operatorName));
       let contentHtml;
@@ -1339,7 +1643,7 @@
     <div class="msg-bubble">
       ${showSender ? `<div class="msg-sender" title="${tooltipText}" style="color: ${senderColor}">${displaySenderName}</div>` : ''}
       ${contentHtml}
-      ${msg.deleted ? '' : `<div class="msg-time">${timeStr}${editedMark}${statusHtml}</div>`}
+      ${msg.deleted ? '' : `<div class="msg-time" title="${fullDateTimeStr}">${timeStr}${editedMark}${statusHtml}</div>`}
       ${!msg.deleted && (allowReply || allowEdit || allowDelete || msg.isFlagged) ? `
         <div class="msg-actions">
           ${allowReply ? `<button class="btn-ghost-sm" onclick="startReply('${msg.id}')">↩ Reply</button>` : ''}
@@ -1375,7 +1679,7 @@
       // Update content
       const contentDiv = bubble.querySelector('.msg-text');
       if (contentDiv && contentKnown) {
-        contentDiv.textContent = newContent;
+        contentDiv.innerHTML = formatWhatsAppText(newContent);
       }
       // Add/update edited mark
       const timeDiv = bubble.querySelector('.msg-time');
@@ -1555,9 +1859,10 @@
           if (row) unreadObserver.observe(row);
         }
       });
+      refreshDateSeparators();
 
       const area = document.getElementById('messagesArea');
-      
+
       // If there are unread messages, scroll to the unread divider or the first unread message
       if (firstUnreadIdx >= 0 && messages[firstUnreadIdx]) {
         const targetRow = document.getElementById('msg-' + messages[firstUnreadIdx].id);
@@ -1658,10 +1963,23 @@
           chatHasMore[jid] = data.hasMore !== false;
           document.getElementById('loadMoreIndicator').style.display = chatHasMore[jid] ? 'block' : 'none';
 
+          // Prepending grows the content above what's currently in view, but
+          // scrollTop (a pixel offset) doesn't move with it - the browser
+          // ends up showing different messages than before the load, landing
+          // near the top of what just got added. Anchor scrollTop by the
+          // exact height added above so the messages the user was reading
+          // stay in the same visual spot, and they can keep scrolling up
+          // into the newly loaded history naturally.
+          const prevScrollHeight = area.scrollHeight;
+          const prevScrollTop = area.scrollTop;
+
           // Prepend each message (oldest first in response, prepend to maintain order)
           msgs.reverse().forEach(m => {
             appendMessage(normalizeMessage(m), false, true);
           });
+          refreshDateSeparators();
+
+          area.scrollTop = prevScrollTop + (area.scrollHeight - prevScrollHeight);
         } catch (e) { showToast('Failed to load messages', 'error'); }
       })();
     }
@@ -1688,7 +2006,7 @@
       const preview = content
         ? (content.length > 60 ? content.slice(0, 60) + '…' : content)
         : (mediaType !== 'text' ? `${icon} ${mediaType}` : '…');
-      document.getElementById('replyBarText').textContent = (mediaType !== 'text' ? `${icon} ` : '') + preview;
+      document.getElementById('replyBarText').innerHTML = (mediaType !== 'text' ? `${icon} ` : '') + formatWhatsAppText(preview);
 
       document.getElementById('messageInput').focus();
     }
@@ -1725,17 +2043,15 @@
       document.getElementById('editingBar').classList.add('visible');
       const currentContent = msg.content || '';
       document.getElementById('editingBarText').textContent = 'Editing: ' + (currentContent.length > 40 ? currentContent.substring(0, 40) + '…' : currentContent);
-      document.getElementById('messageInput').value = currentContent;
-      document.getElementById('messageInput').focus();
+      setComposerText(document.getElementById('messageInput'), currentContent);
       document.getElementById('sendBtn').querySelector('svg').innerHTML = '<path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/>';
-      autoResize(document.getElementById('messageInput'));
     }
 
     function cancelEdit() {
       editingMessageId = null;
       editingMessageJid = null;
       document.getElementById('editingBar').classList.remove('visible');
-      document.getElementById('messageInput').value = '';
+      clearComposer(document.getElementById('messageInput'));
       document.getElementById('sendBtn').querySelector('svg').innerHTML = '<path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>';
     }
 
@@ -1781,7 +2097,7 @@
       }
 
       const input = document.getElementById('messageInput');
-      const text = input.value.trim();
+      const text = getComposerText(input).trim();
       if (!text) return;
 
       const tempId = genTempId();
@@ -1813,16 +2129,16 @@
         quotedMediaType: replyingToMessage?.mediaType || null,
         status: 1,
       });
+      refreshDateSeparators();
       sentTempIds.add(tempId);
 
       cancelReply();
-      input.value = '';
-      input.style.height = 'auto';
+      clearComposer(input);
     }
 
     async function sendEdit() {
       if (!socket?.connected || !editingMessageId || !editingMessageJid) return;
-      const text = document.getElementById('messageInput').value.trim();
+      const text = getComposerText(document.getElementById('messageInput')).trim();
       if (!text) return;
 
       const msg = getRenderedMessage(editingMessageId);
@@ -1841,7 +2157,7 @@
       // Optimistic update
       updateMessageInPlace(editingMessageId, text, Date.now());
       cancelEdit();
-      document.getElementById('messageInput').value = '';
+      clearComposer(document.getElementById('messageInput'));
     }
 
     async function sendMedia() {
@@ -1851,11 +2167,11 @@
       }
 
       const mediaItems = [...pendingMediaList];
-      const caption = document.getElementById('messageInput').value || '';
+      const caption = getComposerText(document.getElementById('messageInput')) || '';
 
       // Clear media preview and input immediately so UI is responsive
       clearMedia();
-      document.getElementById('messageInput').value = '';
+      clearComposer(document.getElementById('messageInput'));
 
       // Loop over and send each media item sequentially
       for (let i = 0; i < mediaItems.length; i++) {
@@ -1910,6 +2226,7 @@
           showToast(`${type} ready to send (connect bridge first)`);
         }
       }
+      refreshDateSeparators();
     }
 
     // ─── Attach Menu ──────────────────────────────────────────────────────────────
@@ -2035,10 +2352,11 @@
         });
         appendMessage({
           id: tempId, sender: operatorName, operatorName, content: name || 'Shared location',
-          time: formatTime(new Date()), outgoing: true, fromMe: true,
+          time: formatTime(new Date()), timestamp: Math.floor(Date.now() / 1000), outgoing: true, fromMe: true,
           mediaType: 'location', mediaUrl: `https://maps.google.com/?q=${lat},${lng}`,
           status: 1,
         });
+        refreshDateSeparators();
         sentTempIds.add(tempId);
       }
     }
@@ -2123,14 +2441,26 @@
                 const safeJid = item.jid.replace(/'/g, "\\'");
                 const noteHtml = item.note ? `<div class="flagged-card-note">"${item.note}"</div>` : '';
                 const chatName = cleanJid(item.jid);
-                
+
+                const mediaIcons = { image: '🖼️ Image', video: '🎥 Video', voice: '🎤 Voice', audio: '🎵 Audio', document: '📄 Document', sticker: '😊 Sticker', location: '📍 Location' };
+                let bodyText;
+                if (item.deleted) {
+                  bodyText = '🚫 This message was deleted';
+                } else if (item.content) {
+                  bodyText = item.content;
+                } else if (item.mediaType && item.mediaType !== 'text') {
+                  bodyText = mediaIcons[item.mediaType] || item.mediaType;
+                } else {
+                  bodyText = `Message ID: ${item.messageId.slice(0, 8)}...`; // message no longer available
+                }
+
                 return `
                   <div class="flagged-card" onclick="jumpToFlaggedMessage('${safeJid}', '${safeMsgId}', ${item.flaggedAt})">
                     <div class="flagged-card-header">
                       <span class="flagged-card-chat-name">${chatName}</span>
                       <span class="flagged-card-flagged-by">by ${item.flaggedByOperatorName || 'unknown'}</span>
                     </div>
-                    <div class="flagged-card-body">Message ID: ${item.messageId.slice(0, 8)}...</div>
+                    <div class="flagged-card-body">${bodyText}</div>
                     ${noteHtml}
                     <button class="flagged-card-resolve-btn" onclick="event.stopPropagation(); resolveFlagDirect('${safeMsgId}', '${safeJid}')">Resolve</button>
                   </div>
@@ -2503,6 +2833,7 @@
           const outgoing = msg.fromMe || msg.outgoing || false;
           const isUnread = !outgoing;
           appendMessage(normalizeMessage(msg), true, false, isUnread);
+          refreshDateSeparators();
           if (isUnread && unreadObserver) {
             const row = document.getElementById('msg-' + msg.id);
             if (row) unreadObserver.observe(row);
@@ -2639,10 +2970,10 @@
               let html = '';
               if (mediaType === 'image') {
                 html = `<img class="msg-image" src="${absoluteMediaUrl}" alt="Image" onclick="openLightbox('${absoluteMediaUrl}')">
-                        <div class="msg-text">${content || ''}</div>`;
+                        <div class="msg-text">${formatWhatsAppText(content || '')}</div>`;
               } else if (mediaType === 'video') {
                 html = `<video class="msg-video" controls><source src="${absoluteMediaUrl}"></video>
-                        <div class="msg-text">${content || ''}</div>`;
+                        <div class="msg-text">${formatWhatsAppText(content || '')}</div>`;
               } else if (mediaType === 'audio' || mediaType === 'voice') {
                 html = `<audio class="msg-audio" controls><source src="${absoluteMediaUrl}"></audio>`;
               } else if (mediaType === 'document') {
@@ -2879,7 +3210,7 @@
           <div class="chat-avatar personal" style="width:28px;height:28px;font-size:11px;flex-shrink:0">${avatarInitial}</div>
           <div style="flex:1;min-width:0">
             <div class="new-chat-contact-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${cleanName}</div>
-            <div class="new-chat-contact-phone">+${contact.phone.split(':')[0]}</div>
+            <div class="new-chat-contact-phone">${fmtPhone('+' + contact.phone.split(':')[0])}</div>
           </div>
         `;
         list.appendChild(item);
@@ -3009,7 +3340,7 @@
         const phone = jid.split('@')[0];
         const contact = allContacts.find(c => c.id === jid || c.phone === phone);
         if (contact && contact.name) return contact.name;
-        return '+' + phone;
+        return fmtPhone('+' + phone);
       }
       return cleanJid(jid);
     }
@@ -3626,67 +3957,5 @@
       }
     });
 
-    // --- Added for Bug 21: Paste images into message input ---
-    const msgInput = document.getElementById('messageInput');
-    if (msgInput) {
-      msgInput.addEventListener('paste', (e) => {
-        let hasImage = false;
-        let imageFiles = [];
-
-        // Check files first (more reliable for actual files like snipping tool)
-        if (e.clipboardData && e.clipboardData.files && e.clipboardData.files.length > 0) {
-          for (let i = 0; i < e.clipboardData.files.length; i++) {
-            if (e.clipboardData.files[i].type.startsWith('image/')) {
-              imageFiles.push(e.clipboardData.files[i]);
-              hasImage = true;
-            }
-          }
-        } 
-        
-        // Fallback to items if files didn't have images
-        if (!hasImage && e.clipboardData && e.clipboardData.items) {
-          const items = e.clipboardData.items;
-          for (let i = 0; i < items.length; i++) {
-            if (items[i].type.startsWith('image/')) {
-              const file = items[i].getAsFile();
-              if (file) {
-                imageFiles.push(file);
-                hasImage = true;
-              }
-            }
-          }
-        }
-        
-        if (!hasImage) return; // Let normal pasting happen
-        
-        e.preventDefault();
-        
-        for (let i = 0; i < imageFiles.length; i++) {
-          let file = imageFiles[i];
-          if (!file.name || file.name === 'image.png' || file.name === 'blob' || file.name.startsWith('image')) {
-            const ext = file.type.split('/')[1] || 'png';
-            const newName = `screenshot-${Date.now()}-${i}.${ext}`;
-            try {
-              file = new File([file], newName, { type: file.type });
-            } catch (err) {
-              console.error("Error creating new File:", err);
-            }
-          }
-          
-          if (pendingMediaList.length + 1 > 100) {
-            showToast('Maximum 100 attachments allowed at a time', 'error');
-            break;
-          }
-          
-          const previewUrl = URL.createObjectURL(file);
-          pendingMediaList.push({
-            id: genTempId(),
-            file: file,
-            type: 'image',
-            previewUrl: previewUrl
-          });
-        }
-        
-        renderMediaPreview();
-      });
-    }
+    // Paste handling (images -> pending attachments, text -> plain-text insert) lives
+    // in handleComposerPaste(), wired up via the messageInput's onpaste attribute.

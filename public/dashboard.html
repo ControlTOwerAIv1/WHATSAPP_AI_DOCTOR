@@ -307,8 +307,9 @@
               </div>
             </div>
 
-            <textarea class="message-input" id="messageInput" placeholder="Type a message… (Enter to send)" rows="1"
-              onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+            <div class="message-input" id="messageInput" contenteditable="true" data-placeholder="Type a message… (Enter to send)"
+              onkeydown="handleKey(event)" oninput="handleComposerInput(this)" onpaste="handleComposerPaste(event)"
+              oncompositionstart="this.dataset.composing='1'" oncompositionend="handleComposerCompositionEnd(this)"></div>
 
             <button class="send-btn" id="sendBtn" onclick="sendMessage()">
               <svg viewBox="0 0 24 24">

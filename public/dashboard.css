@@ -613,6 +613,21 @@
       font-family: var(--font-whatsapp);
     }
 
+    .chat-preview .msg-status-ticks {
+      display: inline-flex;
+      vertical-align: middle;
+      margin-right: 4px;
+      color: var(--muted);
+    }
+
+    .chat-preview .msg-status-ticks.status-read {
+      color: #53bdeb;
+    }
+
+    .chat-preview .msg-status-ticks.status-failed {
+      color: #f87171;
+    }
+
     .unread-dot {
       width: 8px;
       height: 8px;
@@ -943,8 +958,16 @@
 
     .msg-audio {
       width: 100%;
+      min-width: 260px;
       margin-bottom: 6px;
       accent-color: var(--accent);
+    }
+
+    /* Native <audio controls> collapses to a bare play button once its bubble
+       drops below ~250px, so audio bubbles need a wider floor than the normal
+       65% max-width allows. */
+    .msg-bubble:has(.msg-audio) {
+      min-width: 260px;
     }
 
     .msg-document {
@@ -1408,6 +1431,25 @@
 
     .message-input::placeholder {
       color: var(--muted);
+    }
+
+    .message-input[contenteditable] {
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .message-input[contenteditable]:empty::before {
+      content: attr(data-placeholder);
+      color: var(--muted);
+      pointer-events: none;
+    }
+
+    .fmt-mono {
+      font-family: 'Consolas', 'SFMono-Regular', Menlo, Monaco, monospace;
+      background: rgba(127, 127, 127, 0.15);
+      border-radius: 3px;
+      padding: 0 3px;
     }
 
     /* Attach button + menu */
@@ -2975,5 +3017,34 @@
       position: relative;
       z-index: 2;
       box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+    }
+
+    /* Date separator between messages sent on different days. Sticky so the
+       label for the date currently in view stays pinned to the top of the
+       scroll area - each later one in DOM order naturally overlaps/replaces
+       the previous one as you scroll past it (default stacking order). The
+       wrapper ignores pointer events so its transparent side margins don't
+       block clicks on message bubbles scrolling underneath it; the pill
+       itself re-enables them in case it ever needs to be interactive. */
+    .date-separator {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 12px 0;
+      position: sticky;
+      top: 8px;
+      z-index: 5;
+      pointer-events: none;
+    }
+
+    .date-separator-text {
+      background: var(--surface2, #1f2c34);
+      color: var(--muted);
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+      pointer-events: auto;
     }
 

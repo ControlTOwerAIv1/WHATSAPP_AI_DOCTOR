@@ -930,7 +930,22 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
         return obj;
       };
 
-      const restoredRaw = restoreBuffers(JSON.parse(JSON.stringify(msg.raw)));
+      // msg.raw only ever stores the message CONTENT (e.g. { imageMessage: ... }),
+      // not a full WAMessage - see the `raw:` assignments in whatsapp.js. Both
+      // sock.updateMediaMessage and downloadMediaMessage require the full
+      // { key, message } shape (they read message.key and message.message
+      // internally), so it has to be rebuilt here rather than passed as-is.
+      const restoredContent = restoreBuffers(JSON.parse(JSON.stringify(msg.raw)));
+      const restoredRaw = {
+        key: {
+          remoteJid: msg.jid || jid,
+          id: msg.id || id,
+          fromMe: Boolean(msg.fromMe),
+          participant: msg.participant || undefined,
+        },
+        message: restoredContent,
+        messageTimestamp: msg.timestamp,
+      };
 
       const sock = whatsapp.getSock();
 

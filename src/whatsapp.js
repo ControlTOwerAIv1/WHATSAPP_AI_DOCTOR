@@ -299,16 +299,26 @@ function handleMessageStatusUpdateInStore(jid, messageId, status, fromMe) {
   }
 
   if (found) {
+    let previewChanged = false;
     for (const threadJid of targetJids) {
       const thread = stores.messageStore[threadJid];
-      const msg = thread?.find((item) => 
-        item.id === messageId || 
-        item.latestEditMsgId === messageId || 
+      const msg = thread?.find((item) =>
+        item.id === messageId ||
+        item.latestEditMsgId === messageId ||
         (item.edits && item.edits.some(e => e.editMsgId === messageId))
       );
       if (msg) {
         io.emit('message_status_update', { jid: threadJid, messageId: msg.id, status, fromMe });
+        // Keep the chat-list tick in sync when the message that just changed
+        // status (e.g. delivered -> read) is the chat's latest message.
+        if (thread[thread.length - 1] === msg && stores.chatStore[threadJid]) {
+          stores.chatStore[threadJid].lastMsgStatus = msg.fromMe ? (msg.status ?? null) : null;
+          previewChanged = true;
+        }
       }
+    }
+    if (previewChanged) {
+      stores.broadcastChats();
     }
     stores.saveStore();
   }
@@ -837,10 +847,14 @@ async function connectToWhatsApp() {
             unreadCount: (parsed.fromMe || isChatActive(parsed.jid)) ? 0 : 1,
             timestamp: parsed.timestamp,
             lastMsg: parsed.content,
+            lastMsgFromMe: parsed.fromMe,
+            lastMsgStatus: parsed.fromMe ? (parsed.status ?? null) : null,
           });
         } else {
           chatStore[parsed.jid].lastMsg = parsed.content;
           chatStore[parsed.jid].timestamp = parsed.timestamp;
+          chatStore[parsed.jid].lastMsgFromMe = parsed.fromMe;
+          chatStore[parsed.jid].lastMsgStatus = parsed.fromMe ? (parsed.status ?? null) : null;
           if (!parsed.fromMe && !isChatActive(parsed.jid)) {
             chatStore[parsed.jid].unreadCount = (chatStore[parsed.jid].unreadCount || 0) + 1;
           }
@@ -1218,6 +1232,14 @@ async function connectToWhatsApp() {
         }
         if (messagesToSave.length > 0) {
           database.saveMessages(messagesToSave);
+        }
+        // Baileys' Chat objects from history sync carry metadata (timestamp,
+        // unread count) but no message text, so lastMsg above was only ever
+        // carried over from whatever was already cached - blank for any chat
+        // that hasn't had a live message since this bridge started. Backfill
+        // the preview (and sent/read ticks) from the actual latest message.
+        for (const jid of touchedJids) {
+          stores.syncChatPreviewFromLastMessage(jid);
         }
         stores.broadcastChats();
         stores.backfillContactNames();
