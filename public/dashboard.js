@@ -1332,7 +1332,7 @@
         msgAvatarContent = getAvatarContent('community', initial);
       }
 
-      const resolveFlagHtml = msg.isFlagged ? `<button class="btn-ghost-sm" style="color:var(--danger)" onclick="resolveFlagDirect('${msg.id}', '${activeChat?.id}')">🚩 Resolve</button>` : '';
+      const resolveFlagHtml = msg.isFlagged ? `<button class="btn-ghost-sm btn-resolve-flag" style="color:var(--danger)" onclick="resolveFlagDirect('${msg.id}', '${activeChat?.id}')">🚩 Resolve</button>` : '';
 
       row.innerHTML = `
     <div class="msg-avatar ${msgAvatarType}">${msgAvatarContent}</div>
@@ -1624,6 +1624,11 @@
         quotedMediaType: m.quotedMediaType || null,
         status: m.status !== undefined ? m.status : null,
         edits: m.edits || [],
+        isFlagged: m.isFlagged || false,
+        flaggedByOperatorId: m.flaggedByOperatorId || null,
+        flaggedByOperatorName: m.flaggedByOperatorName || null,
+        flaggedNote: m.flaggedNote || null,
+        flaggedAt: m.flaggedAt || null,
       };
     }
 
@@ -2535,6 +2540,15 @@
                 bubble.insertBefore(banner, bubble.firstChild);
               }
             }
+            const actions = row.querySelector('.msg-actions');
+            if (actions && !actions.querySelector('.btn-resolve-flag')) {
+              const btn = document.createElement('button');
+              btn.className = 'btn-ghost-sm btn-resolve-flag';
+              btn.style.color = 'var(--danger)';
+              btn.onclick = () => resolveFlagDirect(messageId, activeChat?.id);
+              btn.innerHTML = '🚩 Resolve';
+              actions.appendChild(btn);
+            }
           }
         }
         socket.emit('get_flagged_messages');
@@ -2547,6 +2561,8 @@
             row.classList.remove('flagged-msg');
             const banner = row.querySelector('.msg-flag-banner');
             if (banner) banner.remove();
+            const btn = row.querySelector('.btn-resolve-flag');
+            if (btn) btn.remove();
           }
         }
         socket.emit('get_flagged_messages');
