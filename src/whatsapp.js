@@ -274,6 +274,17 @@ function handleMessageEditInStore(jid, messageId, newContent, options = {}) {
   return found;
 }
 
+// Numeric ordering of Baileys status codes:
+// 0 = ERROR/failed, 1 = PENDING, 2 = SERVER_ACK (sent), 3 = DELIVERY_ACK, 4 = READ, 5 = PLAYED
+// We treat 0 (failed) as a special override; otherwise only allow forward progression.
+const STATUS_ORDER = { 0: -1, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 };
+function isStatusUpgrade(currentStatus, newStatus) {
+  if (newStatus === 0) return true; // failed is always allowed
+  const cur = STATUS_ORDER[currentStatus] ?? 0;
+  const next = STATUS_ORDER[newStatus] ?? 0;
+  return next > cur;
+}
+
 function handleMessageStatusUpdateInStore(jid, messageId, status, fromMe) {
   if (!jid || !messageId) return false;
   const targetJids = getThreadJids(jid);
@@ -291,7 +302,10 @@ function handleMessageStatusUpdateInStore(jid, messageId, status, fromMe) {
     );
     if (!msg) continue;
 
-    if (msg.status !== status) {
+    // Only apply the update if it represents a status upgrade (or a failure).
+    // This prevents out-of-order / history-sync events from downgrading
+    // blue ticks back to grey ticks.
+    if (msg.status !== status && isStatusUpgrade(msg.status, status)) {
       msg.status = status;
       database.upsertMessage(msg);
       found = true;
@@ -324,6 +338,37 @@ function handleMessageStatusUpdateInStore(jid, messageId, status, fromMe) {
   }
 
   return found;
+}
+
+// When a contact sends a new message it implies they received and read all
+// our preceding outgoing messages. Upgrade any fromMe message in the thread
+// that still has a status < 4 (read) to status 4 so ticks stay correct even
+// when individual receipt events were missed (e.g. connectivity gaps).
+function updatePrecedingOutgoingMessagesRead(jid) {
+  if (!jid) return;
+  const targetJids = getThreadJids(jid);
+  for (const threadJid of targetJids) {
+    const thread = stores.messageStore[threadJid];
+    if (!thread) continue;
+    let previewChanged = false;
+    for (const msg of thread) {
+      if (!msg.fromMe) continue;
+      // Only upgrade; never downgrade. Skip already-read or failed.
+      if (msg.status === 0 || msg.status >= 4) continue;
+      msg.status = 4; // READ
+      database.upsertMessage(msg);
+      io.emit('message_status_update', { jid: threadJid, messageId: msg.id, status: 4, fromMe: true });
+    }
+    // Refresh chat preview tick if the last message is outgoing
+    const last = thread[thread.length - 1];
+    if (last && last.fromMe && stores.chatStore[threadJid]) {
+      stores.chatStore[threadJid].lastMsgStatus = last.status ?? null;
+      previewChanged = true;
+    }
+    if (previewChanged) {
+      stores.broadcastChats();
+    }
+  }
 }
 
 function isChatActive(jid) {
@@ -837,6 +882,12 @@ async function connectToWhatsApp() {
 
         if (!parsed.fromMe && isChatActive(parsed.jid)) {
           markChatAsRead(parsed.jid);
+        }
+
+        // A reply from the contact means they read our previous messages.
+        // Upgrade any preceding outgoing messages that are still below READ.
+        if (!parsed.fromMe) {
+          updatePrecedingOutgoingMessagesRead(parsed.jid);
         }
         if (!chatStore[parsed.jid]) {
           const resolved = stores.resolveContactName(parsed.jid);

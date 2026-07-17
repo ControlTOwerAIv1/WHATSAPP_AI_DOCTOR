@@ -1584,37 +1584,8 @@
       // Render status ticks for outgoing messages
       let statusHtml = '';
       if (outgoing && !msg.deleted) {
-        let tickIcon = '';
-        let tickClass = 'status-sent';
-        let tooltip = 'Sent';
+        statusHtml = getTickHtml(msg.status, msg.timestamp, msg.id);
 
-        if (msg.status === 0 || msg.status === 'failed') {
-          tickIcon = `<svg class="tick-svg status-failed-svg" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle;"><circle cx="8" cy="8" r="7"/><line x1="8" y1="5" x2="8" y2="9"/><line x1="8" y1="12" x2="8.01" y2="12" stroke-width="2.5"/></svg>`;
-          tickClass = 'status-failed';
-          tooltip = 'Failed to send';
-        } else if ((msg.status === 1 || msg.status === 'pending') && (Math.floor(Date.now() / 1000) - msg.timestamp < 60)) {
-          tickIcon = '🕒';
-          tickClass = 'status-pending';
-          tooltip = 'Pending...';
-        } else if (msg.status === 2 || msg.status === 'sent') {
-          tickIcon = `<svg class="tick-svg" viewBox="0 0 16 11" width="12" height="9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle;"><path d="M1 5.5L5 9.5L15 1.5"/></svg>`;
-          tickClass = 'status-sent';
-          tooltip = 'Sent';
-        } else if (msg.status === 3 || msg.status === 'delivered') {
-          tickIcon = `<svg class="tick-svg" viewBox="0 0 19 11" width="15" height="9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle;"><path d="M1 5.5L5 9.5L10 4.5 M8 5.5L11.5 9L18 1.5"/></svg>`;
-          tickClass = 'status-delivered';
-          tooltip = 'Delivered';
-        } else if (msg.status === 4 || msg.status === 'read' || msg.status === 5 || msg.status === 'played') {
-          tickIcon = '✓✓';
-          tickClass = 'status-read';
-          tooltip = 'Read';
-        } else {
-          // Default fallback for sent messages if status is not set, or is stale pending
-          tickIcon = '✓';
-          tickClass = 'status-sent';
-          tooltip = 'Sent';
-        }
-        statusHtml = `<span class="msg-status-ticks ${tickClass}" id="status-tick-${msg.id}" title="${tooltip}">${tickIcon}</span>`;
       }
 
       let msgAvatarType = 'personal';
@@ -1726,32 +1697,15 @@
       }
     }
 
-    function updateMessageStatusInUI(messageId, status) {
-      const row = document.getElementById('msg-' + messageId);
-      if (!row) return;
-
-      row.dataset.status = status;
-
-      const tickEl = document.getElementById('status-tick-' + messageId);
-      if (!tickEl) {
-        const timeDiv = row.querySelector('.msg-time');
-        if (timeDiv && row.dataset.fromMe === '1') {
-          const span = document.createElement('span');
-          span.id = 'status-tick-' + messageId;
-          timeDiv.appendChild(span);
-          updateTickElement(span, status, row.dataset.timestamp);
-        }
-      } else {
-        updateTickElement(tickEl, status, row.dataset.timestamp);
-      }
-    }
-
-    function updateTickElement(el, status, timestamp) {
-      let tickIcon = '';
-      let tickClass = 'status-pending';
-      let tooltip = 'Sending...';
-
+    // ─── Shared tick rendering ────────────────────────────────────────────────
+    // Single source of truth for status tick icons and classes. Used by both
+    // the initial message render and the live updateTickElement() function so
+    // they are always visually identical.
+    function getTickHtml(status, timestamp, id) {
       const ageSeconds = timestamp ? (Math.floor(Date.now() / 1000) - Number(timestamp)) : 0;
+      let tickIcon = '';
+      let tickClass = 'status-sent';
+      let tooltip = 'Sent';
 
       if (status === 0 || status === 'failed') {
         tickIcon = `<svg class="tick-svg status-failed-svg" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle;"><circle cx="8" cy="8" r="7"/><line x1="8" y1="5" x2="8" y2="9"/><line x1="8" y1="12" x2="8.01" y2="12" stroke-width="2.5"/></svg>`;
@@ -1774,14 +1728,47 @@
         tickClass = 'status-read';
         tooltip = 'Read';
       } else {
+        // Stale pending or unrecognized — show single grey tick
         tickIcon = `<svg class="tick-svg" viewBox="0 0 16 11" width="12" height="9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle;"><path d="M1 5.5L5 9.5L15 1.5"/></svg>`;
         tickClass = 'status-sent';
         tooltip = 'Sent';
       }
 
-      el.className = `msg-status-ticks ${tickClass}`;
-      el.innerHTML = tickIcon;
-      el.title = tooltip;
+      const idAttr = id ? ` id="status-tick-${id}"` : '';
+      return `<span class="msg-status-ticks ${tickClass}"${idAttr} title="${tooltip}">${tickIcon}</span>`;
+    }
+
+    function updateMessageStatusInUI(messageId, status) {
+      const row = document.getElementById('msg-' + messageId);
+      if (!row) return;
+
+      row.dataset.status = status;
+
+      const tickEl = document.getElementById('status-tick-' + messageId);
+      if (!tickEl) {
+        const timeDiv = row.querySelector('.msg-time');
+        if (timeDiv && row.dataset.fromMe === '1') {
+          const span = document.createElement('span');
+          span.id = 'status-tick-' + messageId;
+          timeDiv.appendChild(span);
+          updateTickElement(span, status, row.dataset.timestamp);
+        }
+      } else {
+        updateTickElement(tickEl, status, row.dataset.timestamp);
+      }
+    }
+
+    function updateTickElement(el, status, timestamp) {
+      const html = getTickHtml(status, timestamp);
+      // Parse out just the class, innerHTML, and title from the generated HTML
+      const tmp = document.createElement('span');
+      tmp.innerHTML = html;
+      const src = tmp.firstChild;
+      if (src) {
+        el.className = src.className;
+        el.innerHTML = src.innerHTML;
+        el.title = src.title;
+      }
     }
 
     function markMessageDeleted(messageId) {
