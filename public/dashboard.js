@@ -2459,6 +2459,18 @@
       }
     }
 
+    function updateFlaggedBadge() {
+      const badge = document.getElementById('flaggedCount');
+      if (!badge) return;
+      const count = flaggedList.length;
+      badge.textContent = count;
+      if (count > 0) {
+        badge.style.display = 'inline-block';
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+
     function openChatFromPanel(chat) {
       openChat({
         ...chat,
@@ -2888,11 +2900,13 @@
 
       socket.on('flagged_list', (list) => {
         flaggedList = list || [];
+        updateFlaggedBadge();
         if (currentTab === 'flagged') renderPanel();
       });
 
       socket.on('flagged_list_updated', (list) => {
         flaggedList = list || [];
+        updateFlaggedBadge();
         if (currentTab === 'flagged') renderPanel();
       });
 

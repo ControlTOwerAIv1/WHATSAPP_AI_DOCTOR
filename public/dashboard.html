@@ -334,7 +334,10 @@
       </div>
       <div class="panel-tabs">
         <div class="panel-tab active" onclick="switchTab('operators',this)">Operators</div>
-        <div class="panel-tab" onclick="switchTab('flagged',this)" id="flaggedTab">Flagged</div>
+        <div class="panel-tab" onclick="switchTab('flagged',this)" id="flaggedTab">
+          Flagged
+          <span class="flagged-count-badge" id="flaggedCount">0</span>
+        </div>
         <div class="panel-tab" onclick="switchTab('create',this)" id="createTab">Create Group</div>
       </div>
       <div class="panel-content" id="panelContent"></div>
