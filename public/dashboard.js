@@ -3852,7 +3852,7 @@
     function markChatUnreadDirect(jid, scope) {
       if (socket?.connected) {
         socket.emit('mark_chat_unread', { jid, scope });
-        showToast(`Marked chat unread for ${scope === 'me' ? 'you' : scope === 'others' ? 'others' : 'everyone'}.`);
+        showToast('Marked chat as unread.');
       }
     }
     window.markChatUnreadDirect = markChatUnreadDirect;
@@ -4008,11 +4008,10 @@
           e.preventDefault();
           const jid = chatItem.getAttribute('data-jid');
           
+          // Seen-status is global across operators, so there's a single
+          // mark-as-unread action (per-operator scopes are on hold).
           let menuHtml = `
-            <div class="context-menu-item" onclick="markChatUnreadDirect('${jid}', 'me')">🔵 Mark as Unread (Me)</div>
-            <div class="context-menu-item" onclick="markChatUnreadDirect('${jid}', 'others')">👥 Mark as Unread (Others)</div>
-            <div class="context-menu-divider"></div>
-            <div class="context-menu-item" onclick="markChatUnreadDirect('${jid}', 'all')">🌎 Mark as Unread (Everyone)</div>
+            <div class="context-menu-item" onclick="markChatUnreadDirect('${jid}', 'all')">🔵 Mark as Unread</div>
           `;
           
           menu.innerHTML = menuHtml;

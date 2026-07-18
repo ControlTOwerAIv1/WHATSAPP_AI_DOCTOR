@@ -1254,6 +1254,12 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     });
 
     socket.on('mark_chat_unread', ({ jid, scope }) => {
+      // Seen-status is currently global across operators (see
+      // stores.getUnreadCountForOperator): any operator's read pointer clears
+      // the badge for everyone, so partial scopes ('me'/'others') can't take
+      // effect - a remaining pointer from any other operator would keep the
+      // chat read. Force the global scope until per-operator seen is revived.
+      scope = 'all';
       const preferredJid = stores.getPreferredJid(jid) || jid;
       const targetJids = [preferredJid];
       const mappedAltJid = preferredJid.endsWith('@lid') ? stores.lidToJid[preferredJid] : stores.jidToLid[preferredJid];

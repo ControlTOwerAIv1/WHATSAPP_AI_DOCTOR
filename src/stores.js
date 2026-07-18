@@ -1469,6 +1469,11 @@ function getMessageFlag(messageId) {
   return flaggedMessages[messageId] || null;
 }
 
+// NOTE: seen-status is currently GLOBAL across operators - once any operator
+// reads a chat, the unread badge clears for everyone. Per-operator read
+// pointers are still recorded (setOperatorReadPointer) so per-operator badges
+// can be reinstated later by scanning only operatorReads[operatorId] here
+// again; the operatorId parameter is kept for that reason.
 function getUnreadCountForOperator(chatId, operatorId) {
   const chat = chatStore[chatId];
   if (!chat) return 0;
@@ -1479,10 +1484,10 @@ function getUnreadCountForOperator(chatId, operatorId) {
   let lastReadTimestamp = -1;
   let hasPointer = false;
 
-  for (const jid of threadJids) {
-    if (operatorReads[operatorId] && operatorReads[operatorId][jid]) {
-      const ptr = operatorReads[operatorId][jid];
-      if (ptr.timestamp > lastReadTimestamp) {
+  for (const reads of Object.values(operatorReads)) {
+    for (const jid of threadJids) {
+      const ptr = reads[jid];
+      if (ptr && ptr.timestamp > lastReadTimestamp) {
         lastReadTimestamp = ptr.timestamp;
         hasPointer = true;
       }
