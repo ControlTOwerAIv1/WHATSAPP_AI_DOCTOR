@@ -72,18 +72,30 @@ function loadFailedResolutions() {
   }
 }
 
+// Debounced + async: a burst of failing resolutions (all 145 unresolvable LIDs
+// fail together during a sweep or a broadcast-triggered render pass) used to do
+// one synchronous writeFileSync per failure. On a OneDrive-synced folder each
+// write can block for a long time while the sync client holds the file, and the
+// accumulated blocking starved the event loop - frozen dashboard, and Baileys'
+// keepalive missed its window ("Connection was lost"). One deferred async write
+// per burst instead.
+let failedResolutionsSaveTimer = null;
 function saveFailedResolutions() {
-  const file = LID_FAILED_CACHE_FILE();
-  if (!file) return;
-  try {
-    const dir = path.dirname(file);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const obj = {};
-    for (const [lid, ts] of failedResolutions) obj[lid] = ts;
-    fs.writeFileSync(file, JSON.stringify(obj), 'utf8');
-  } catch (e) {
-    // Non-critical
-  }
+  if (failedResolutionsSaveTimer) return;
+  failedResolutionsSaveTimer = setTimeout(() => {
+    failedResolutionsSaveTimer = null;
+    const file = LID_FAILED_CACHE_FILE();
+    if (!file) return;
+    try {
+      const dir = path.dirname(file);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const obj = {};
+      for (const [lid, ts] of failedResolutions) obj[lid] = ts;
+      fs.writeFile(file, JSON.stringify(obj), 'utf8', () => {});
+    } catch (e) {
+      // Non-critical
+    }
+  }, 2000);
 }
 
 function clearFailedResolutions() {
@@ -396,14 +408,15 @@ async function resolveAllLidsFromStore() {
       // getPNForLID is a local lookup against Baileys' own auth-state cache,
       // not a network call - there's no rate limit to respect here. silent
       // skips the per-item full chat-list broadcast (see resolveLidToPhoneAsync)
-      // and deferSave skips the per-item synchronous disk write; both are
-      // done once below instead. The 500ms-per-item delay this used to have
-      // meant a backlog of ~100+ LIDs made the server unresponsive for over a
-      // minute on every reconnect - a bare await still yields to the event
-      // loop between iterations without adding real wall-clock delay.
+      // and deferSave skips the per-item disk write; both are done once below
+      // instead. The 500ms-per-item delay this used to have meant a backlog of
+      // ~100+ LIDs made the server unresponsive for over a minute on every
+      // reconnect. setImmediate (unlike await Promise.resolve(), which only
+      // drains microtasks) genuinely yields to pending IO/timers between
+      // iterations, so cache-hit runs can't starve the event loop.
       const pn = await resolveLidToPhoneAsync(jid, { silent: true, deferSave: true });
       if (pn) resolvedCount++;
-      await Promise.resolve();
+      await new Promise((resolve) => setImmediate(resolve));
     }
     saveFailedResolutions();
     if (resolvedCount > 0) broadcastChats();

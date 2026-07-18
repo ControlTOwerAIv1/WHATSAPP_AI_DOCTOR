@@ -3576,6 +3576,9 @@
       if (!activeChat) return;
       if (!confirm('Are you sure you want to leave this group? This action cannot be undone.')) return;
       
+      const btn = document.getElementById('leaveGroupBtn');
+      if (btn) btn.disabled = true;
+      
       try {
         showToast('Leaving group...', 'info');
         const res = await fetch(`${bridgeUrl}/api/groups/${encodeURIComponent(activeChat.id)}/leave`, {
@@ -3595,6 +3598,8 @@
       } catch (err) {
         showToast('Error leaving group', 'error');
         console.error(err);
+      } finally {
+        if (btn) btn.disabled = false;
       }
     }
 

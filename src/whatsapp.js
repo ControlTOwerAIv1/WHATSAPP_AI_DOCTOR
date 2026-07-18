@@ -219,10 +219,14 @@ function handleMessageEditInStore(jid, messageId, newContent, options = {}) {
       msg.content = newContent;
     }
     msg.editedAt = editedAt;
-    // Note: WhatsApp keeps a message's delivery/read ticks when it's edited, so
-    // don't touch msg.status here. Receipts for the edit itself arrive keyed by
-    // the edit message id and are matched via latestEditMsgId / edits[].editMsgId
-    // in handleMessageStatusUpdateInStore.
+    // An edit restarts the delivery/read cycle: the receiver hasn't seen the
+    // new content yet. Receipts for the edit message itself (keyed by its
+    // editMsgId) then re-upgrade the ticks via handleMessageStatusUpdateInStore.
+    // Skip duplicates (alreadyRecorded) so the late plaintext resend of an edit
+    // doesn't undo receipt progress made since the edit was first seen.
+    if (msg.fromMe && !alreadyRecorded) {
+      msg.status = 2;
+    }
     if (options.editMsgId) {
       msg.latestEditMsgId = options.editMsgId;
     }
@@ -270,6 +274,13 @@ function handleMessageEditInStore(jid, messageId, newContent, options = {}) {
   if (found) {
     if (emitEvent) {
       io.emit('message_edited', { jid: targetJids[0], messageId, newContent, editedAt: editedAt * 1000, edits: updatedEdits });
+      for (const threadJid of targetJids) {
+        const thread = stores.messageStore[threadJid];
+        const updatedMsg = thread?.find((item) => item.id === messageId);
+        if (updatedMsg && updatedMsg.fromMe) {
+          io.emit('message_status_update', { jid: threadJid, messageId: updatedMsg.id, status: updatedMsg.status, fromMe: true });
+        }
+      }
     }
     stores.broadcastChats();
     stores.saveStore();
@@ -310,6 +321,7 @@ function handleMessageStatusUpdateInStore(jid, messageId, status, fromMe) {
     // This prevents out-of-order / history-sync events from downgrading
     // blue ticks back to grey ticks.
     if (msg.status !== status && isStatusUpgrade(msg.status, status)) {
+      console.log(`[DEBUG-STATUS] ${msg.status} -> ${status} for msg ${msg.id}${msg.id !== messageId ? ` (via edit receipt ${messageId})` : ''}`);
       msg.status = status;
       database.upsertMessage(msg);
       found = true;
@@ -998,6 +1010,22 @@ async function connectToWhatsApp() {
           console.log('[DEBUG-EDIT] messages.update has message, keys:', Object.keys(rawMessage), 'key:', JSON.stringify(key));
           const unwrapped = stores.unwrapMessage(rawMessage);
           handleProtocolMessage({ key, message: rawMessage }, unwrapped, { isExternal: true });
+        }
+      }
+    });
+
+    // Per-participant receipts (mainly group chats; 1:1 receipts usually come
+    // through messages.update above). Only upgrades status, never downgrades,
+    // via the same matcher that maps edit-message receipts back to the original.
+    sock.ev.on('message-receipt.update', (updates = []) => {
+      for (const { key, receipt } of updates) {
+        if (!key?.remoteJid || !key?.id || !receipt) continue;
+        let status = null;
+        if (receipt.playedTimestamp) status = 5;
+        else if (receipt.readTimestamp) status = 4;
+        else if (receipt.receiptTimestamp) status = 3;
+        if (status !== null) {
+          handleMessageStatusUpdateInStore(key.remoteJid, key.id, status, key.fromMe);
         }
       }
     });

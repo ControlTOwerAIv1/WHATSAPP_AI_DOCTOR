@@ -146,6 +146,11 @@
       letter-spacing: 0.3px;
     }
 
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
     .btn-primary {
       background: var(--accent);
       color: #000;
