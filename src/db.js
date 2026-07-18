@@ -148,6 +148,7 @@ class RelayDatabase {
     this.contactCountStmt = this.db.prepare('SELECT COUNT(*) AS count FROM contacts');
     this.chatCountStmt = this.db.prepare('SELECT COUNT(*) AS count FROM chats');
     this.messageCountStmt = this.db.prepare('SELECT COUNT(*) AS count FROM messages');
+    this.getMessagePayloadStmt = this.db.prepare('SELECT payload FROM messages WHERE id = ?');
     this.allContactsStmt = this.db.prepare('SELECT payload FROM contacts');
     this.allChatsStmt = this.db.prepare('SELECT payload FROM chats ORDER BY timestamp DESC, id DESC');
     this.allMessagesStmt = this.db.prepare('SELECT payload FROM messages ORDER BY jid ASC, timestamp ASC, id ASC');
@@ -225,6 +226,20 @@ class RelayDatabase {
 
   upsertMessage(message) {
     const payload = this.normalizeMessageRecord(message);
+    // In-memory copies are deliberately raw-stripped (stores.addMessageToStore);
+    // an upsert coming from one of those must not wipe the full raw payload that
+    // only the DB still holds - decrypting a later edit needs its messageSecret.
+    if (!payload.raw && payload.id) {
+      try {
+        const existingRow = this.getMessagePayloadStmt.get(payload.id);
+        if (existingRow) {
+          const existingRaw = JSON.parse(existingRow.payload)?.raw;
+          if (existingRaw) payload.raw = existingRaw;
+        }
+      } catch (e) {
+        console.warn('[Database] Failed to preserve raw payload for', payload.id, e.message);
+      }
+    }
     this.upsertMessageStmt.run({
       id: payload.id,
       jid: payload.jid,

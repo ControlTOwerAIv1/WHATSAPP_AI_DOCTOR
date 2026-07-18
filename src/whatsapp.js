@@ -201,19 +201,28 @@ function handleMessageEditInStore(jid, messageId, newContent, options = {}) {
     }
 
     if (!msg) continue;
+    // The same edit event can arrive twice (messages.upsert and messages.update
+    // both route through handleProtocolMessage). If this editMsgId is already
+    // recorded and there's no new text to apply, don't record it again.
+    const alreadyRecorded = Boolean(options.editMsgId) &&
+      Array.isArray(msg.edits) && msg.edits.some((e) => e.editMsgId === options.editMsgId);
     // newContent === null means we know an edit happened but couldn't recover
     // the new text (e.g. missing/undecryptable messageSecret) - still mark it
     // edited so the UI reflects reality, without blanking the existing content.
     if (newContent !== null && msg.content === newContent) {
       continue;
     }
+    if (alreadyRecorded && newContent === null) {
+      continue;
+    }
     if (newContent !== null) {
       msg.content = newContent;
     }
     msg.editedAt = editedAt;
-    if (msg.fromMe) {
-      msg.status = 2; // Reset status back to sent (SERVER_ACK) when edited
-    }
+    // Note: WhatsApp keeps a message's delivery/read ticks when it's edited, so
+    // don't touch msg.status here. Receipts for the edit itself arrive keyed by
+    // the edit message id and are matched via latestEditMsgId / edits[].editMsgId
+    // in handleMessageStatusUpdateInStore.
     if (options.editMsgId) {
       msg.latestEditMsgId = options.editMsgId;
     }
@@ -235,12 +244,14 @@ function handleMessageEditInStore(jid, messageId, newContent, options = {}) {
     }
 
     if (!msg.edits) msg.edits = [];
-    msg.edits.push({
-      operatorId: editOperatorId,
-      operatorName: editOperatorName,
-      editedAt: editedAt * 1000,
-      editMsgId: options.editMsgId || null,
-    });
+    if (!alreadyRecorded) {
+      msg.edits.push({
+        operatorId: editOperatorId,
+        operatorName: editOperatorName,
+        editedAt: editedAt * 1000,
+        editMsgId: options.editMsgId || null,
+      });
+    }
     updatedEdits = msg.edits;
 
     database.upsertMessage(msg);
@@ -259,13 +270,6 @@ function handleMessageEditInStore(jid, messageId, newContent, options = {}) {
   if (found) {
     if (emitEvent) {
       io.emit('message_edited', { jid: targetJids[0], messageId, newContent, editedAt: editedAt * 1000, edits: updatedEdits });
-      for (const threadJid of targetJids) {
-        const thread = stores.messageStore[threadJid];
-        const msg = thread?.find((item) => item.id === messageId);
-        if (msg && msg.fromMe) {
-          io.emit('message_status_update', { jid: threadJid, messageId: msg.id, status: 2, fromMe: true });
-        }
-      }
     }
     stores.broadcastChats();
     stores.saveStore();
@@ -414,6 +418,15 @@ function getMessageSecret(raw) {
     return m.messageContextInfo.messageSecret;
   }
 
+  // Some older DB rows carry the secret at the top level of raw (written by a
+  // previous history-fetch recovery path) rather than inside messageContextInfo.
+  if (m.messageSecret) {
+    return m.messageSecret;
+  }
+  if (raw.messageSecret) {
+    return raw.messageSecret;
+  }
+
   for (const key of Object.keys(m)) {
     const sub = m[key];
     if (sub && typeof sub === 'object') {
@@ -466,6 +479,31 @@ function decryptSecretEdit(sem, secretBuffer, originalId, originalSenderJid) {
     }
   }
   return null;
+}
+
+// Edits we've already asked the phone to re-send in plaintext, keyed by the
+// edit message's own id, so a resend that comes back undecryptable again can't
+// trigger a request loop.
+const editResendRequested = new Set();
+
+// The phone keeps a plaintext copy of every message it sent. When an edit
+// arrives as a secretEncryptedMessage we can't decrypt (typically because the
+// original was sent from the phone, whose messageSecret is never synced to
+// companions), ask the phone to re-send it via a PeerDataOperationRequest
+// (PLACEHOLDER_MESSAGE_RESEND). Baileys decodes the response and re-emits it
+// as a normal messages.upsert carrying a plaintext protocolMessage(MESSAGE_EDIT),
+// which the plaintext edit path below then applies.
+function requestEditPlaintextResend(rawMsg) {
+  const key = rawMsg?.key;
+  if (!key?.id || !sock || connectionStatus !== 'connected') return;
+  if (typeof sock.requestPlaceholderResend !== 'function') return;
+  if (editResendRequested.has(key.id)) return;
+  editResendRequested.add(key.id);
+  if (editResendRequested.size > 500) editResendRequested.clear();
+  console.log('[DEBUG-EDIT] Requesting plaintext resend from phone for edit msg:', key.id);
+  Promise.resolve(sock.requestPlaceholderResend(key))
+    .then((res) => console.log('[DEBUG-EDIT] Placeholder resend request sent, result:', res))
+    .catch((e) => console.warn('[DEBUG-EDIT] Placeholder resend request failed:', e.message));
 }
 
 function handleProtocolMessage(rawMsg, unwrappedMsg, options = {}) {
@@ -548,10 +586,12 @@ function handleProtocolMessage(rawMsg, unwrappedMsg, options = {}) {
                 // Couldn't decrypt the new text - still surface that an edit happened.
                 console.warn('[DEBUG-EDIT] Failed to decrypt secretEncryptedMessage.');
                 handleMessageEditInStore(targetJid, targetId, null, { ...options, editMsgId: rawMsg?.key?.id });
+                if (options.emitEvent !== false) requestEditPlaintextResend(rawMsg);
               }
             } else {
               console.warn('[DEBUG-EDIT] messageSecret present but in an unrecognized format.');
               handleMessageEditInStore(targetJid, targetId, null, { ...options, editMsgId: rawMsg?.key?.id });
+              if (options.emitEvent !== false) requestEditPlaintextResend(rawMsg);
             }
           } else {
             // No messageSecret available for the original message (e.g. it predates
@@ -559,9 +599,11 @@ function handleProtocolMessage(rawMsg, unwrappedMsg, options = {}) {
             // still flag the message as edited rather than silently dropping the event.
             console.warn('[DEBUG-EDIT] Original message found, but messageSecret is missing.');
             handleMessageEditInStore(targetJid, targetId, null, { ...options, editMsgId: rawMsg?.key?.id });
+            if (options.emitEvent !== false) requestEditPlaintextResend(rawMsg);
           }
         } else {
           console.warn('[DEBUG-EDIT] Original message not found in store or DB for ID:', targetId);
+          if (options.emitEvent !== false) requestEditPlaintextResend(rawMsg);
         }
       }
       return true; // Stop processing this secretEncryptedMessage as a new message
