@@ -2409,10 +2409,22 @@
       </div>
       <div class="form-group">
         <label class="form-label">Participants</label>
-        <textarea class="form-textarea" id="newGroupParticipants" placeholder="919876543210&#10;918765432109"></textarea>
-        <div class="form-hint">One phone number per line (with country code, no +)</div>
+        <div id="groupChips" class="group-chips"></div>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <input class="form-input" id="newGroupNumber" placeholder="+91 98765 43210" style="flex:1"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();addGroupNumber();}">
+          <button class="btn btn-ghost" onclick="addGroupNumber()">Add</button>
+        </div>
+        <div class="form-hint">Full number starting with + and country code (e.g. +919876543210)</div>
       </div>
-      <button class="btn btn-primary" style="width:100%" onclick="createGroup()">Create Group</button>`;
+      <div class="form-group">
+        <label class="form-label">Or pick from saved contacts</label>
+        <input class="form-input" id="groupContactSearch" placeholder="Search contacts…" oninput="renderGroupContacts(this.value)">
+        <div id="groupContactsList" class="group-contacts-list"></div>
+      </div>
+      <button class="btn btn-primary" style="width:100%" id="createGroupBtn" onclick="createGroup()">Create Group</button>`;
+        renderGroupChips();
+        loadGroupContacts();
       }
 
       else if (currentTab === 'flagged') {
@@ -2480,31 +2492,151 @@
       }, null);
     }
 
+    // ─── Group creation (contact picker + manual numbers) ─────────────────────────
+    // Draft participants keyed by bare digits; label is the saved contact name or
+    // the formatted +number for manually typed entries.
+    const groupDraft = new Map();
+    let groupPickerContacts = [];
+
+    async function loadGroupContacts() {
+      try {
+        const res = await fetch(`${bridgeUrl}/api/contacts`);
+        const contacts = await res.json();
+        // Only phone-jid contacts can be added by number; @lid-only entries
+        // don't expose a real phone number.
+        groupPickerContacts = (contacts || []).filter(c => c.id && c.id.endsWith('@s.whatsapp.net'));
+      } catch (e) {
+        groupPickerContacts = [];
+      }
+      renderGroupContacts(document.getElementById('groupContactSearch')?.value || '');
+    }
+
+    function renderGroupChips() {
+      const el = document.getElementById('groupChips');
+      if (!el) return;
+      if (groupDraft.size === 0) {
+        el.innerHTML = '<span class="form-hint">No participants yet</span>';
+      } else {
+        el.innerHTML = [...groupDraft.values()].map(p => `
+          <span class="group-chip">${escapeHtml(p.label)}<button onclick="removeGroupParticipant('${p.digits}')" aria-label="Remove ${escapeHtml(p.label)}">&times;</button></span>
+        `).join('');
+      }
+      const btn = document.getElementById('createGroupBtn');
+      if (btn) {
+        btn.textContent = groupDraft.size
+          ? `Create Group (${groupDraft.size} member${groupDraft.size > 1 ? 's' : ''})`
+          : 'Create Group';
+      }
+    }
+
+    function removeGroupParticipant(digits) {
+      groupDraft.delete(digits);
+      renderGroupChips();
+      renderGroupContacts(document.getElementById('groupContactSearch')?.value || '');
+    }
+
+    function addGroupNumber() {
+      const input = document.getElementById('newGroupNumber');
+      const raw = input.value.trim();
+      if (!raw) return;
+      if (!raw.startsWith('+')) {
+        showToast('Start with + and country code (e.g. +919876543210)', 'error');
+        input.focus();
+        return;
+      }
+      const digits = raw.replace(/\D/g, '');
+      if (digits.length < 7 || digits.length > 15) {
+        showToast('Enter a valid phone number with country code', 'error');
+        input.focus();
+        return;
+      }
+      if (groupDraft.has(digits)) {
+        showToast('Already in the list', 'info');
+        input.value = '';
+        return;
+      }
+      groupDraft.set(digits, { digits, label: fmtPhone('+' + digits) });
+      input.value = '';
+      input.focus();
+      renderGroupChips();
+      renderGroupContacts(document.getElementById('groupContactSearch')?.value || '');
+    }
+
+    function toggleGroupContact(digits) {
+      if (groupDraft.has(digits)) {
+        groupDraft.delete(digits);
+      } else {
+        const contact = groupPickerContacts.find(c => (c.phone || '').replace(/\D/g, '') === digits);
+        const label = (contact && cleanJid(contact.name)) || fmtPhone('+' + digits);
+        groupDraft.set(digits, { digits, label });
+      }
+      renderGroupChips();
+      renderGroupContacts(document.getElementById('groupContactSearch')?.value || '');
+    }
+
+    function renderGroupContacts(q = '') {
+      const list = document.getElementById('groupContactsList');
+      if (!list) return;
+      const term = q.trim().toLowerCase();
+      const filtered = groupPickerContacts.filter(c => {
+        if (!term) return true;
+        return (c.name || '').toLowerCase().includes(term) || (c.phone || '').includes(term);
+      });
+      if (!filtered.length) {
+        list.innerHTML = '<div style="padding:12px;text-align:center;color:var(--muted);font-size:12px">No contacts found</div>';
+        return;
+      }
+      list.innerHTML = filtered.slice(0, 200).map(c => {
+        const digits = (c.phone || '').replace(/\D/g, '');
+        if (!digits) return '';
+        const name = cleanJid(c.name) || fmtPhone('+' + digits);
+        const selected = groupDraft.has(digits);
+        return `
+          <div class="new-chat-contact-item${selected ? ' group-contact-selected' : ''}"
+               onclick="toggleGroupContact('${digits}')">
+            <span class="group-contact-check">${selected ? '☑' : '☐'}</span>
+            <div style="flex:1;min-width:0">
+              <div class="new-chat-contact-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(name)}</div>
+              <div class="new-chat-contact-phone">${fmtPhone('+' + digits)}</div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
     async function createGroup() {
       const name = document.getElementById('newGroupName').value.trim();
-      const raw = document.getElementById('newGroupParticipants').value.trim();
       if (!name) { showToast('Enter a group name', 'error'); return; }
-      const participants = raw.split('\n').map(p => p.trim()).filter(Boolean).map(p => `${p}@s.whatsapp.net`);
-      if (!participants.length) { showToast('Add at least one participant', 'error'); return; }
+      if (!groupDraft.size) { showToast('Add at least one participant', 'error'); return; }
+      if (!socket) { showToast('Connect bridge first', 'error'); return; }
 
-      if (socket) {
-        try {
-          const res = await fetch(`${bridgeUrl}/api/groups/create`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, participants }),
-          });
-          const data = await res.json();
-          if (data.id) {
-            showToast(`Group "${name}" created!`);
-          } else {
-            showToast(data.error || 'Failed to create group', 'error');
+      const participants = [...groupDraft.keys()].map(d => '+' + d);
+      const btn = document.getElementById('createGroupBtn');
+      if (btn) btn.disabled = true;
+      try {
+        const res = await fetch(`${bridgeUrl}/api/groups/create`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, participants }),
+        });
+        const data = await res.json();
+        if (data.id) {
+          let msg = `Group "${name}" created with ${data.added || participants.length} member(s)`;
+          if (data.skipped && data.skipped.length) {
+            msg += ` — skipped ${data.skipped.map(s => `${s.input} (${s.reason})`).join(', ')}`;
           }
-        } catch (e) { showToast(e.message, 'error'); return; }
-      } else {
-        showToast('Connect bridge first', 'error'); return;
+          showToast(msg, data.skipped && data.skipped.length ? 'info' : 'success');
+          document.getElementById('newGroupName').value = '';
+          groupDraft.clear();
+          renderGroupChips();
+          renderGroupContacts('');
+        } else {
+          showToast(data.error || 'Failed to create group', 'error');
+        }
+      } catch (e) {
+        showToast(e.message, 'error');
+      } finally {
+        if (btn) btn.disabled = false;
       }
-      document.getElementById('newGroupName').value = '';
-      document.getElementById('newGroupParticipants').value = '';
     }
 
     // ─── Bridge Connection ────────────────────────────────────────────────────────

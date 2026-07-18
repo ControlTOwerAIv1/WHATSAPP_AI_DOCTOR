@@ -2596,6 +2596,58 @@
       font-family: var(--font-whatsapp);
     }
 
+    /* Group creation: participant chips + contact picker */
+    .group-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      min-height: 28px;
+      padding: 4px 0;
+    }
+
+    .group-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 3px 8px 3px 10px;
+      font-size: 12px;
+      max-width: 100%;
+    }
+
+    .group-chip button {
+      background: none;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 2px;
+    }
+
+    .group-chip button:hover {
+      color: var(--danger, #e55);
+    }
+
+    .group-contacts-list {
+      max-height: 220px;
+      overflow-y: auto;
+      margin-top: 6px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+
+    .group-contact-check {
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    .group-contact-selected {
+      background: var(--surface);
+    }
+
     /* Chat Search Panel */
     .chat-search-panel {
       width: 300px;

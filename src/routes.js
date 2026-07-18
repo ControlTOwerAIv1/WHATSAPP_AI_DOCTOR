@@ -760,11 +760,63 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   app.post('/api/groups/create', async (req, res) => {
     const sock = whatsapp.getSock();
     if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
+
+    const name = String(req.body.name || '').trim();
+    const rawParticipants = Array.isArray(req.body.participants) ? req.body.participants : [];
+    if (!name) return res.status(400).json({ error: 'Group name is required' });
+    if (!rawParticipants.length) return res.status(400).json({ error: 'At least one participant is required' });
+
+    // Accept "+91 98765 43210", "919876543210" or full jids; dedupe by digits.
+    const skipped = [];
+    const seen = new Set();
+    const numbers = [];
+    for (const raw of rawParticipants) {
+      if (typeof raw !== 'string' || !raw.trim()) continue;
+      let value = raw.trim();
+      if (value.includes('@')) value = value.split('@')[0].split(':')[0];
+      const digits = value.replace(/\D/g, '');
+      if (digits.length < 7 || digits.length > 15) {
+        skipped.push({ input: raw, reason: 'Invalid phone number' });
+        continue;
+      }
+      if (!seen.has(digits)) {
+        seen.add(digits);
+        numbers.push({ input: raw, digits });
+      }
+    }
+    if (!numbers.length) {
+      return res.status(400).json({ error: 'No valid phone numbers provided', skipped });
+    }
+
     try {
-      const result = await sock.groupCreate(req.body.name, req.body.participants);
+      // Verify each number is on WhatsApp before creating, and use the exact
+      // jid WhatsApp returns (it can differ from the typed number, e.g.
+      // Brazilian numbers with/without the extra 9). One-at-a-time keeps the
+      // input-to-result mapping unambiguous; group creation is a rare,
+      // small-batch operation so the extra round-trips don't matter.
+      const participants = [];
+      for (const n of numbers) {
+        let entry = null;
+        try {
+          const results = await sock.onWhatsApp(n.digits);
+          entry = Array.isArray(results) ? results[0] : null;
+        } catch (lookupErr) {
+          console.warn(`[Bridge] onWhatsApp lookup failed for ${n.digits}:`, lookupErr.message);
+        }
+        if (entry && entry.exists && entry.jid) {
+          participants.push(entry.jid);
+        } else {
+          skipped.push({ input: n.input, reason: 'Not on WhatsApp' });
+        }
+      }
+      if (!participants.length) {
+        return res.status(400).json({ error: 'None of the numbers are on WhatsApp', skipped });
+      }
+
+      const result = await sock.groupCreate(name, participants);
       stores.groupStore[result.id] = result;
       io.emit('group_created', result);
-      res.json(result);
+      res.json({ ...result, added: participants.length, skipped });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
