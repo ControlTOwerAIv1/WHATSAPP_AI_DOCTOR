@@ -723,10 +723,44 @@ async function disconnectWhatsApp() {
     }
 
     if (sock) {
+      // Baileys' logout() only *writes* the remove-companion-device iq and then
+      // immediately tears the socket down without waiting for WhatsApp's ack
+      // (sendNode + end, not query). If the frame doesn't make it through - or
+      // the socket wasn't fully open - the phone keeps showing this device as
+      // linked even though all local state gets wiped below. So first send the
+      // unlink as an awaited query: it only resolves once WhatsApp's server
+      // acknowledges the device removal.
+      let unlinkAcked = false;
+      if (connectionStatus === 'connected' && sock.user?.id) {
+        try {
+          await sock.query({
+            tag: 'iq',
+            attrs: { to: '@s.whatsapp.net', type: 'set', xmlns: 'md' },
+            content: [{
+              tag: 'remove-companion-device',
+              attrs: { jid: sock.user.id, reason: 'user_initiated' },
+            }],
+          }, 15000);
+          unlinkAcked = true;
+          console.log('[Bridge] WhatsApp server acknowledged the device unlink.');
+        } catch (err) {
+          console.error('[Bridge] Device unlink query failed (will still try logout):', err.message);
+        }
+      } else {
+        console.warn(`[Bridge] Not connected (status: ${connectionStatus}) - cannot unlink from phone, clearing local session only. The device entry may remain in the phone's Linked Devices list.`);
+      }
+
       try {
+        // Keep the normal logout teardown so the close handler sees the usual
+        // loggedOut reason. When the unlink was already acked above, the
+        // redundant iq inside logout() is harmless.
         await sock.logout();
       } catch (err) {
-        console.error('[Bridge] Error during sock.logout():', err.message);
+        if (unlinkAcked) {
+          console.warn('[Bridge] sock.logout() teardown error after acked unlink (safe to ignore):', err.message);
+        } else {
+          console.error('[Bridge] Error during sock.logout():', err.message);
+        }
         try {
           sock.end();
         } catch (e) {
@@ -933,6 +967,7 @@ async function connectToWhatsApp() {
         if (thread.some((existing) => existing.id === parsed.id)) continue;
         stores.addMessageToStore(parsed);
         io.emit('message', parsed);
+        io.emit('stats', database.counts());
 
         if (!parsed.fromMe && isChatActive(parsed.jid)) {
           markChatAsRead(parsed.jid);

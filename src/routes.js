@@ -1130,6 +1130,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     socket.emit('chats', stores.sortedChats(opId));
     socket.emit('flagged_list', stores.getFlaggedMessages());
     socket.emit('sync_status', stores.getSyncState());
+    socket.emit('stats', database.counts());
 
     socket.on('set_operator_name', ({ name }) => {
       const op = operators.get(socket.id);

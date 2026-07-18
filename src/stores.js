@@ -1388,6 +1388,7 @@ async function recordOutboundMessage({ jid, operator, result, message }) {
   saveStore();
   broadcastChats();
   io.emit('message', sentMsg);
+  io.emit('stats', database.counts());
   return sentMsg;
 }
 

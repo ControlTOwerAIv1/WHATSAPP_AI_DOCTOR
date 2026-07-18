@@ -1796,6 +1796,8 @@
       }
       chatMessageCounts[data.jid] = data.total;
       chatHasMore[data.jid] = data.hasMore;
+      // Note: statMessages reflects the system-wide total (via the 'stats' socket
+      // event), not this chat's message count - do not overwrite it with data.total here.
 
       clearMessages();
       document.getElementById('loadMoreIndicator').style.display = data.hasMore ? 'block' : 'none';
@@ -2889,6 +2891,12 @@
         liveOperators = ops || [];
         document.getElementById('statOperators').textContent = liveOperators.length;
         if (currentTab === 'operators') renderPanel();
+      });
+
+      socket.on('stats', (stats) => {
+        if (stats && typeof stats.messages === 'number') {
+          document.getElementById('statMessages').textContent = stats.messages;
+        }
       });
 
       socket.on('groups', groups => {
