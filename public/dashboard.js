@@ -925,7 +925,19 @@
       filteredChats.forEach(chat => {
         const assigneeClass = isAssignedToMe(chat) ? 'chat-assignee mine' : (isAssignedToOther(chat) ? 'chat-assignee locked' : 'chat-assignee');
         const isGroupChat = chat.type === 'group' || chat.type === 'community' || chat.id.endsWith('@g.us');
-        const assigneeLabel = isGroupChat ? '' : `<div class="${assigneeClass}">${!chat.assignedOperatorId ? 'Open' : (isAssignedToMe(chat) ? 'Mine' : (chat.assignedOperatorName || 'Locked'))}</div>`;
+        // Unassigned chats show just the name of the operator who last handled
+        // them (last operator to send a message); nothing if never handled.
+        // Locked/mine states still win.
+        const lastHandledName = chat.lastHandledByOperatorName ? escapeHtml(chat.lastHandledByOperatorName) : '';
+        const lastHandledBadge = lastHandledName
+          ? `<div class="chat-assignee" title="Last handled by ${lastHandledName}">${lastHandledName}</div>`
+          : '';
+        let assigneeLabel;
+        if (!isGroupChat && chat.assignedOperatorId) {
+          assigneeLabel = `<div class="${assigneeClass}">${isAssignedToMe(chat) ? 'Mine' : escapeHtml(chat.assignedOperatorName || 'Locked')}</div>`;
+        } else {
+          assigneeLabel = lastHandledBadge;
+        }
         const item = document.createElement('div');
         item.className = 'chat-item' + (activeChat?.id === chat.id ? ' active' : '');
         item.setAttribute('data-jid', chat.id);

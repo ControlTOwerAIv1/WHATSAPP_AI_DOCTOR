@@ -3167,3 +3167,11 @@
   border-radius: 8px;
   pointer-events: none;
 }
+
+/* Last-handled-by badge can carry a full name — keep it on one line */
+.chat-assignee {
+  max-width: 130px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

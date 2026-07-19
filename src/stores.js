@@ -432,7 +432,30 @@ async function resolveAllLidsFromStore() {
   }
 }
 
+// Backfill lastHandledBy* for chats from before the feature existed: outgoing
+// operator messages already carry operatorId/operatorName, so the most recent
+// one tells us who last handled the chat. Scans only the newest 100 messages;
+// once a value is found it's stored on the chat and never rescanned. Messages
+// sent from the linked phone itself have no operator fields and don't count.
+function resolveLastHandledFromHistory(chat) {
+  if (!chat?.id || chat.lastHandledByOperatorName) return;
+  const msgs = messageStore[chat.id];
+  if (!msgs || msgs.length === 0) return;
+  const stop = Math.max(0, msgs.length - 100);
+  for (let i = msgs.length - 1; i >= stop; i--) {
+    const m = msgs[i];
+    if (m.fromMe && (m.operatorName || m.operatorId)) {
+      chat.lastHandledByOperatorId = m.operatorId || null;
+      chat.lastHandledByOperatorName = m.operatorName || m.operatorId;
+      chat.lastHandledAt = toTimestamp(m.timestamp) * 1000;
+      if (chatStore[chat.id] === chat) database.upsertChat(chat);
+      return;
+    }
+  }
+}
+
 function normalizeChat(chat = {}, operatorId = null) {
+  resolveLastHandledFromHistory(chat);
   let phone = null;
   const id = chat.id;
   if (id) {
@@ -1401,6 +1424,13 @@ async function recordOutboundMessage({ jid, operator, result, message }) {
     status: result?.status !== undefined ? result.status : 1,
     raw: result?.message || null,
   });
+  if (operator?.id || operator?.name) {
+    const chat = ensureChatExists(jid);
+    chat.lastHandledByOperatorId = operator.id || null;
+    chat.lastHandledByOperatorName = operator.name || operator.id;
+    chat.lastHandledAt = Date.now();
+    database.upsertChat(chat);
+  }
   updateChatPreview(jid, sentMsg.content, timestamp, true, sentMsg.status);
   saveStore();
   broadcastChats();
