@@ -490,7 +490,9 @@ function normalizeChat(chat = {}, operatorId = null) {
   if (isGroup && id) {
     if (groupStore[id]) {
       const g = groupStore[id];
-      if (g.readOnly !== undefined) readOnly = Boolean(g.readOnly);
+      // Presence in groupStore means we're a participant again — group
+      // metadata is authoritative, stale left/readOnly flags must not stick.
+      readOnly = g.readOnly !== undefined ? Boolean(g.readOnly) : false;
       if (Array.isArray(g.participants)) {
         participants = g.participants.map(p => {
           let resolvedId = p.id;
@@ -531,7 +533,7 @@ function normalizeChat(chat = {}, operatorId = null) {
     assignedAt: chat.assignedAt || null,
     participants: participants,
     readOnly: readOnly,
-    left: readOnly ? true : Boolean(chat.left),
+    left: readOnly,
   };
 }
 

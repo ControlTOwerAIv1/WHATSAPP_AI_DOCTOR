@@ -1081,15 +1081,83 @@ async function connectToWhatsApp() {
       }
     });
 
+    // Fires when we (re)join a group — including being added back after leaving.
+    sock.ev.on('groups.upsert', (groupMetas = []) => {
+      for (const meta of groupMetas) {
+        if (!meta?.id) continue;
+        groupStore[meta.id] = { ...groupStore[meta.id], ...meta };
+        const type = (meta.isCommunity || meta.isCommunityAnnounce) ? 'community' : 'group';
+        if (chatStore[meta.id]) {
+          chatStore[meta.id].readOnly = false;
+          chatStore[meta.id].left = false;
+          chatStore[meta.id].type = type;
+          if (meta.subject) chatStore[meta.id].name = meta.subject;
+          database.upsertChat(chatStore[meta.id]);
+        }
+      }
+      io.emit('groups', Object.values(groupStore));
+      stores.broadcastChats();
+    });
+
+    // True if any entry in `participants` is our own account (phone JID or LID form).
+    const isSelfParticipant = (participants = []) => {
+      if (!sock?.user) return false;
+      const selfIds = new Set();
+      if (sock.user.id) selfIds.add(jidNormalizedUser(sock.user.id));
+      if (sock.user.lid) selfIds.add(jidNormalizedUser(sock.user.lid));
+      return participants.some(p => {
+        const jid = typeof p === 'string' ? p : p?.id;
+        return jid && selfIds.has(jidNormalizedUser(jid));
+      });
+    };
+
     sock.ev.on('group-participants.update', async ({ id, participants, action }) => {
+      // We got removed (or left from another device): groupMetadata would fail
+      // since we're no longer a member — mark the chat read-only right away.
+      if (action === 'remove' && isSelfParticipant(participants)) {
+        delete groupStore[id];
+        if (chatStore[id]) {
+          chatStore[id].readOnly = true;
+          chatStore[id].left = true;
+          chatStore[id].participants = [];
+          database.upsertChat(chatStore[id]);
+        }
+        io.emit('groups', Object.values(groupStore));
+        stores.broadcastChats();
+        return;
+      }
+
+      // We got added back: clear the left flags up front so the composer
+      // re-enables even if the metadata fetch below races and fails.
+      const selfAdded = action === 'add' && isSelfParticipant(participants);
+      if (selfAdded && chatStore[id]) {
+        chatStore[id].readOnly = false;
+        chatStore[id].left = false;
+        database.upsertChat(chatStore[id]);
+      }
       try {
         const meta = await sock.groupMetadata(id);
         groupStore[id] = meta;
+        if (chatStore[id]) {
+          chatStore[id].readOnly = Boolean(meta.readOnly);
+          chatStore[id].left = Boolean(meta.readOnly);
+          database.upsertChat(chatStore[id]);
+        }
         io.emit('groups', Object.values(groupStore));
         stores.broadcastChats();
       } catch (e) {
         console.error('[Bridge] Failed to fetch group metadata on update:', e);
-        const meta = groupStore[id];
+        let meta = groupStore[id];
+        if (!meta && selfAdded) {
+          // Re-added but the group is gone from groupStore (deleted on removal)
+          // and the metadata fetch failed — stub it so normalizeChat doesn't
+          // keep treating the chat as left. Next sync fills in real metadata.
+          meta = groupStore[id] = {
+            id,
+            subject: chatStore[id]?.name || id,
+            participants: [],
+          };
+        }
         if (meta) {
           if (!meta.participants) meta.participants = [];
           if (action === 'add') {
@@ -1658,6 +1726,8 @@ async function loadGroups() {
       } else {
         chatStore[id].name = meta.subject;
         chatStore[id].type = type;
+        chatStore[id].readOnly = false;
+        chatStore[id].left = false;
       }
       database.upsertChat(chatStore[id]);
     }
