@@ -881,11 +881,20 @@
 
     .msg-bubble {
       max-width: 65%;
+      min-width: 0;
       padding: 10px 14px;
       border-radius: 12px;
       font-size: 13px;
       line-height: 1.5;
       position: relative;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+
+    .msg-text {
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
     }
 
     .message-row.incoming .msg-bubble {
@@ -907,6 +916,8 @@
       margin-bottom: 3px;
       font-family: var(--font-whatsapp);
       letter-spacing: 0.3px;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
     .message-row.outgoing .msg-sender {
