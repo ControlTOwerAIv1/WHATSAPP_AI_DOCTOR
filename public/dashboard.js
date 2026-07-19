@@ -314,63 +314,31 @@
     // else is inserted as plain text so rich HTML from other apps can't inject
     // stray markup into the composer.
     function handleComposerPaste(e) {
-      let hasImage = false;
-      let imageFiles = [];
-
+      // Copied/cut files (any type — images, videos, documents) become pending
+      // attachments through the same pipeline as the attach menu.
+      const files = [];
       if (e.clipboardData && e.clipboardData.files && e.clipboardData.files.length > 0) {
         for (let i = 0; i < e.clipboardData.files.length; i++) {
-          if (e.clipboardData.files[i].type.startsWith('image/')) {
-            imageFiles.push(e.clipboardData.files[i]);
-            hasImage = true;
-          }
+          files.push(e.clipboardData.files[i]);
         }
       }
-
-      if (!hasImage && e.clipboardData && e.clipboardData.items) {
+      if (files.length === 0 && e.clipboardData && e.clipboardData.items) {
         const items = e.clipboardData.items;
         for (let i = 0; i < items.length; i++) {
-          if (items[i].type.startsWith('image/')) {
+          if (items[i].kind === 'file') {
             const file = items[i].getAsFile();
-            if (file) {
-              imageFiles.push(file);
-              hasImage = true;
-            }
+            if (file) files.push(file);
           }
         }
       }
 
-      e.preventDefault();
-
-      if (hasImage) {
-        for (let i = 0; i < imageFiles.length; i++) {
-          let file = imageFiles[i];
-          if (!file.name || file.name === 'image.png' || file.name === 'blob' || file.name.startsWith('image')) {
-            const ext = file.type.split('/')[1] || 'png';
-            const newName = `screenshot-${Date.now()}-${i}.${ext}`;
-            try {
-              file = new File([file], newName, { type: file.type });
-            } catch (err) {
-              console.error("Error creating new File:", err);
-            }
-          }
-
-          if (pendingMediaList.length + 1 > 100) {
-            showToast('Maximum 100 attachments allowed at a time', 'error');
-            break;
-          }
-
-          const previewUrl = URL.createObjectURL(file);
-          pendingMediaList.push({
-            id: genTempId(),
-            file: file,
-            type: 'image',
-            previewUrl: previewUrl
-          });
-        }
-        renderMediaPreview();
+      if (files.length > 0) {
+        e.preventDefault();
+        addFilesToPending(files);
         return;
       }
 
+      e.preventDefault();
       const pastedText = (e.clipboardData || window.clipboardData).getData('text/plain');
       if (!pastedText) return;
       document.execCommand('insertText', false, pastedText);
@@ -693,6 +661,9 @@
       } else {
         if (readOnlyBanner) readOnlyBanner.style.display = 'none';
         if (inputRow) inputRow.style.display = 'flex';
+        // Clear the inline display:none set by the read-only branch, otherwise
+        // it permanently overrides the .visible class in every other chat.
+        if (mediaPreviewStrip) mediaPreviewStrip.style.display = '';
       }
 
       const isGroup = activeChat && (activeChat.type === 'group' || activeChat.type === 'community');
@@ -2345,6 +2316,64 @@
       renderMediaPreview();
     }
 
+    function mediaTypeForFile(file) {
+      const mime = file.type || '';
+      if (mime.startsWith('image/')) return 'image';
+      if (mime.startsWith('video/')) return 'video';
+      if (mime.startsWith('audio/')) return 'audio';
+      return 'document';
+    }
+
+    // Shared entry point for dropped and pasted files — same pipeline as the
+    // attach menu: classify by MIME, queue in pendingMediaList, show previews.
+    // Returns true if at least one file was queued.
+    function addFilesToPending(fileList) {
+      const files = Array.from(fileList || []).filter(Boolean);
+      if (files.length === 0) return false;
+
+      if (!activeChat) {
+        showToast('Open a chat before attaching files', 'error');
+        return false;
+      }
+      if (isChatReadOnly(activeChat)) {
+        showToast("You can't send messages in this chat", 'error');
+        return false;
+      }
+      const isGroup = activeChat.type === 'group' || activeChat.type === 'community';
+      if (!isGroup && isAssignedToOther(activeChat)) {
+        showToast(`Conversation locked by ${activeChat.assignedOperatorName || activeChat.assignedOperatorId}`, 'error');
+        return false;
+      }
+      if (pendingMediaList.length + files.length > 100) {
+        showToast('Maximum 100 attachments allowed at a time', 'error');
+        return false;
+      }
+
+      for (let i = 0; i < files.length; i++) {
+        let file = files[i];
+        const type = mediaTypeForFile(file);
+        // Clipboard screenshots come in unnamed — give them a real filename.
+        if (type === 'image' && (!file.name || file.name === 'blob' || file.name.startsWith('image'))) {
+          const ext = (file.type.split('/')[1] || 'png').split('+')[0];
+          try {
+            file = new File([file], `screenshot-${Date.now()}-${i}.${ext}`, { type: file.type });
+          } catch (err) {
+            console.error('Error renaming pasted image:', err);
+          }
+        }
+        const previewUrl = (type === 'image' || type === 'video') ? URL.createObjectURL(file) : null;
+        pendingMediaList.push({
+          id: genTempId(),
+          file,
+          type,
+          previewUrl
+        });
+      }
+
+      renderMediaPreview();
+      return true;
+    }
+
     function renderMediaPreview() {
       const strip = document.getElementById('mediaPreviewStrip');
       const thumb = document.getElementById('previewThumb');
@@ -2356,6 +2385,7 @@
         return;
       }
 
+      strip.style.display = '';
       pendingMediaList.forEach((item) => {
         const itemEl = document.createElement('div');
         itemEl.className = 'preview-item';
@@ -4206,12 +4236,57 @@
       });
     }
 
+    // ─── Drag & Drop file upload ─────────────────────────────────────────────────
+    function setupDragAndDrop() {
+      const zone = document.getElementById('chatView');
+      if (!zone) return;
+
+      const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+      // dragenter/dragleave fire for every child element crossed; track depth
+      // so the highlight only clears when the pointer truly leaves the zone.
+      let dragDepth = 0;
+
+      zone.addEventListener('dragenter', (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        dragDepth++;
+        zone.classList.add('drag-over');
+      });
+      zone.addEventListener('dragover', (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      });
+      zone.addEventListener('dragleave', (e) => {
+        if (!hasFiles(e)) return;
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (dragDepth === 0) zone.classList.remove('drag-over');
+      });
+      zone.addEventListener('drop', (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        dragDepth = 0;
+        zone.classList.remove('drag-over');
+        addFilesToPending(e.dataTransfer.files);
+      });
+
+      // Anywhere else on the page: block the browser's default behavior of
+      // navigating to (opening) the dropped file.
+      document.addEventListener('dragover', (e) => {
+        if (hasFiles(e)) e.preventDefault();
+      });
+      document.addEventListener('drop', (e) => {
+        if (hasFiles(e)) e.preventDefault();
+      });
+    }
+
     // ─── Init ─────────────────────────────────────────────────────────────────────
     // Show empty state initially
     document.getElementById('chatList').innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">Click "Connect Bridge" to start</div>';
     renderPanel();
     renderChatHeader();
     setupCustomContextMenus();
+    setupDragAndDrop();
 
     // Internet connectivity check
     updateInternetStatus();
