@@ -160,8 +160,31 @@
     // ─── Composer (contenteditable messageInput) ────────────────────────────────────
     // Reads plain text back out of the composer div, treating <br> as '\n' (matches
     // how formatWhatsAppText() turns '\n' into <br> when rendering).
+    // Reads the composer's plain text by walking the DOM (same traversal as the
+    // caret helpers), so <br> handling is deterministic across browsers. The
+    // trailing sentinel <br> is presentational only and excluded.
     function getComposerText(el) {
-      return el.innerText.replace(/\r\n/g, '\n');
+      let text = '';
+      (function walk(node) {
+        if (node.nodeType === Node.TEXT_NODE) { text += node.nodeValue; return; }
+        if (node.nodeName === 'BR') {
+          if (!isSentinelBr(node)) text += '\n';
+          return;
+        }
+        for (const child of node.childNodes) walk(child);
+      })(el);
+      return text.replace(/\r\n/g, '\n');
+    }
+
+    function isSentinelBr(node) {
+      return node.nodeName === 'BR' && node.dataset && node.dataset.composerSentinel === '1';
+    }
+
+    // A lone trailing <br> doesn't render as a visible empty line, so when the
+    // text ends with a newline we append a sentinel <br> that exists only for
+    // rendering — every text/caret walker skips it.
+    function renderComposerHtml(text) {
+      return formatWhatsAppText(text) + (/\n$/.test(text || '') ? '<br data-composer-sentinel="1">' : '');
     }
 
     function clearComposer(el) {
@@ -171,7 +194,7 @@
     // Full programmatic replace (edit-mode load, etc.) - caret goes to the end,
     // matching the old textarea's behavior when .value was assigned.
     function setComposerText(el, text) {
-      el.innerHTML = formatWhatsAppText(text || '');
+      el.innerHTML = renderComposerHtml(text || '');
       el.focus();
       const range = document.createRange();
       range.selectNodeContents(el);
@@ -200,7 +223,7 @@
         }
         if (node.nodeName === 'BR') {
           if (node === range.endContainer) caret = text.length;
-          text += '\n';
+          if (!isSentinelBr(node)) text += '\n';
           return;
         }
         const children = node.childNodes;
@@ -231,7 +254,7 @@
           return;
         }
         if (node.nodeName === 'BR') {
-          remaining -= 1;
+          if (!isSentinelBr(node)) remaining -= 1;
           return;
         }
         for (const child of node.childNodes) {
@@ -244,10 +267,13 @@
       const range = document.createRange();
       if (target) {
         range.setStart(target.node, Math.max(0, Math.min(target.offset, target.node.nodeValue.length)));
+        range.collapse(true);
       } else {
+        // Offset lies past the last text node (e.g. right after a trailing line
+        // break) — put the caret at the very end, never back at the start.
         range.selectNodeContents(el);
+        range.collapse(false);
       }
-      range.collapse(true);
       const sel = window.getSelection();
       sel.removeAllRanges();
       sel.addRange(range);
@@ -258,7 +284,7 @@
       if (el.dataset.composing === '1') return; // wait for IME composition to finish
       const caret = getComposerCaretOffset(el);
       const text = getComposerText(el);
-      el.innerHTML = formatWhatsAppText(text);
+      el.innerHTML = renderComposerHtml(text);
       if (caret !== null) setComposerCaretOffset(el, caret);
     }
 
@@ -271,7 +297,14 @@
       if (e.key !== 'Enter') return;
       e.preventDefault();
       if (e.shiftKey) {
-        document.execCommand('insertLineBreak');
+        // Insert the newline in the text model and re-render, instead of
+        // execCommand('insertLineBreak') — the browser's <br> insertion didn't
+        // survive the composer's input re-render round-trip.
+        const el = (e.target.closest && e.target.closest('[contenteditable]')) || document.getElementById('messageInput');
+        const text = getComposerText(el);
+        const caret = getComposerCaretOffset(el) ?? text.length;
+        el.innerHTML = renderComposerHtml(text.slice(0, caret) + '\n' + text.slice(caret));
+        setComposerCaretOffset(el, caret + 1);
       } else {
         sendMessage();
       }
@@ -4077,7 +4110,7 @@
         section(`👁‍🗨 Read by ${readBy.length}/${total}`, 'var(--accent)', readBy, p => formatReceiptTime(p.readAt)) +
         section(`✓✓ Delivered to ${deliveredTo.length}`, 'var(--muted)', deliveredTo, p => formatReceiptTime(p.deliveredAt)) +
         section(`🕓 Pending ${pending.length}`, 'var(--muted)', pending, () => '') +
-        '<div style="font-size:11px;color:var(--muted);">Participants with read receipts disabled only ever show as delivered. Messages sent before this feature have no per-participant data.</div>';
+        '<div style="font-size:11px;color:var(--muted);">Participants with read receipts disabled only ever show as delivered.</div>';
     }
 
     function setupCustomContextMenus() {
