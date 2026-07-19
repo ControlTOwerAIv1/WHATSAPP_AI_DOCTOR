@@ -1149,6 +1149,22 @@
       font-size: 11px;
     }
 
+    .read-only-banner {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 14px 18px;
+      background: var(--surface2, #202c33);
+      color: var(--muted, #8696a0);
+      font-size: 13px;
+      font-family: var(--font-whatsapp);
+      text-align: center;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin: 4px 0;
+      line-height: 1.4;
+    }
+
     /* Reply bar (shown when replying to a message) */
     .reply-bar {
       display: none;

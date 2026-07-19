@@ -619,7 +619,49 @@
       refreshComposerState();
     }
 
+    function isChatReadOnly(chat) {
+      if (!chat) return false;
+      if (chat.readOnly || chat.isReadOnly || chat.left) return true;
+      const isGroup = chat.type === 'group' || chat.type === 'community' || (chat.id && chat.id.endsWith('@g.us'));
+      if (isGroup) {
+        if (Array.isArray(chat.participants) && chat.participants.length === 0) {
+          return true;
+        }
+        if (chat.participants === 0 || chat.participants === '0') {
+          return true;
+        }
+      }
+      return false;
+    }
+
     function refreshComposerState() {
+      const readOnlyBanner = document.getElementById('readOnlyBanner');
+      const inputRow = document.querySelector('.input-row');
+      const replyBar = document.getElementById('replyBar');
+      const editingBar = document.getElementById('editingBar');
+      const mediaPreviewStrip = document.getElementById('mediaPreviewStrip');
+
+      const isReadOnly = isChatReadOnly(activeChat);
+
+      if (isReadOnly) {
+        if (inputRow) inputRow.style.display = 'none';
+        if (replyBar) replyBar.classList.remove('visible');
+        if (editingBar) editingBar.style.display = 'none';
+        if (mediaPreviewStrip) mediaPreviewStrip.style.display = 'none';
+
+        if (readOnlyBanner) {
+          const isGroup = activeChat && (activeChat.type === 'group' || activeChat.type === 'community' || activeChat.id.endsWith('@g.us'));
+          readOnlyBanner.textContent = isGroup
+            ? "You can't send messages to this group because you're no longer a participant."
+            : "You can't send messages to this chat.";
+          readOnlyBanner.style.display = 'flex';
+        }
+        return;
+      } else {
+        if (readOnlyBanner) readOnlyBanner.style.display = 'none';
+        if (inputRow) inputRow.style.display = 'flex';
+      }
+
       const isGroup = activeChat && (activeChat.type === 'group' || activeChat.type === 'community');
       const disabled = Boolean(activeChat && !isGroup && isAssignedToOther(activeChat));
       const input = document.getElementById('messageInput');
@@ -1577,7 +1619,7 @@
         contentHtml = flagBanner + buildQuotedPreviewHtml(msg) + buildMediaContent(msg);
       }
 
-      const allowReply = !msg.deleted;
+      const allowReply = !msg.deleted && !isChatReadOnly(activeChat);
       const allowEdit = canEditMessage(msg);
       const allowDelete = canDeleteForEveryone(msg);
 
@@ -2068,6 +2110,10 @@
     // ─── Send ─────────────────────────────────────────────────────────────────────
     async function sendMessage() {
       if (!activeChat) return;
+      if (isChatReadOnly(activeChat)) {
+        showToast("You can't send messages because you're no longer in this group", 'error');
+        return;
+      }
       if (isAssignedToOther(activeChat)) {
         showToast(`Conversation locked by ${activeChat.assignedOperatorName || activeChat.assignedOperatorId}`, 'error');
         return;

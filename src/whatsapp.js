@@ -1642,6 +1642,7 @@ async function loadGroups() {
   const { groupStore, chatStore } = stores;
   try {
     const groups = await sock.groupFetchAllParticipating();
+    const groupJids = new Set(Object.keys(groups));
     for (const [id, meta] of Object.entries(groups)) {
       groupStore[id] = meta;
       const type = (meta.isCommunity || meta.isCommunityAnnounce) ? 'community' : 'group';
@@ -1660,11 +1661,21 @@ async function loadGroups() {
       }
       database.upsertChat(chatStore[id]);
     }
+
+    // Mark any existing group in chatStore that is not in participating list as left/readOnly
+    for (const [id, chat] of Object.entries(chatStore)) {
+      if ((chat.type === 'group' || chat.type === 'community' || id.endsWith('@g.us')) && !groupJids.has(id)) {
+        chat.readOnly = true;
+        chat.left = true;
+        chat.participants = [];
+      }
+    }
+
     io.emit('groups', Object.values(groupStore));
     stores.migrateChatTypes();
     stores.broadcastChats();
     stores.saveStore();
-    console.log(`[Bridge] Loaded ${Object.keys(groupStore).length} groups`);
+    console.log(`[Bridge] Loaded ${Object.keys(groupStore).length} active groups`);
   } catch (e) {
     console.error('[Bridge] Failed to load groups:', e);
   }

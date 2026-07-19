@@ -485,22 +485,35 @@ function normalizeChat(chat = {}, operatorId = null) {
 
   const isGroup = chat.type === 'group' || chat.type === 'community' || (id && id.endsWith('@g.us'));
   let participants = chat.participants || [];
-  if (isGroup && id && groupStore[id]) {
-    participants = (groupStore[id].participants || []).map(p => {
-      let resolvedId = p.id;
-      if (p.id && p.id.endsWith('@lid')) {
-        const phoneJid = lidToJid[p.id];
-        if (phoneJid) {
-          resolvedId = phoneJid;
-        } else {
-          resolveLidToPhoneAsync(p.id);
+  let readOnly = Boolean(chat.readOnly || chat.isReadOnly || chat.left);
+
+  if (isGroup && id) {
+    if (groupStore[id]) {
+      const g = groupStore[id];
+      if (g.readOnly !== undefined) readOnly = Boolean(g.readOnly);
+      if (Array.isArray(g.participants)) {
+        participants = g.participants.map(p => {
+          let resolvedId = p.id;
+          if (p.id && p.id.endsWith('@lid')) {
+            const phoneJid = lidToJid[p.id];
+            if (phoneJid) {
+              resolvedId = phoneJid;
+            } else {
+              resolveLidToPhoneAsync(p.id);
+            }
+          }
+          return {
+            ...p,
+            id: resolvedId
+          };
+        });
+        if (participants.length === 0) {
+          readOnly = true;
         }
       }
-      return {
-        ...p,
-        id: resolvedId
-      };
-    });
+    } else if (Object.keys(groupStore).length > 0) {
+      readOnly = true;
+    }
   }
 
   const finalUnreadCount = operatorId && id ? getUnreadCountForOperator(id, operatorId) : Number(chat.unreadCount || 0);
@@ -517,6 +530,8 @@ function normalizeChat(chat = {}, operatorId = null) {
     assignedOperatorName: chat.assignedOperatorName || null,
     assignedAt: chat.assignedAt || null,
     participants: participants,
+    readOnly: readOnly,
+    left: readOnly ? true : Boolean(chat.left),
   };
 }
 
