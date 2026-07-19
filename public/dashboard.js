@@ -3133,6 +3133,14 @@
         }
       });
 
+      // Per-participant receipt arrived — live-refresh the Details modal if
+      // it's open for that message.
+      socket.on('message_receipt', ({ jid, messageId }) => {
+        if (msgInfoTarget && msgInfoTarget.messageId === messageId) {
+          refreshMessageInfo();
+        }
+      });
+
       socket.on('message_failed', ({ clientTempId, jid, error }) => {
         if (clientTempId) {
           updateMessageStatusInUI(clientTempId, 0);
@@ -3811,6 +3819,8 @@
     window.updateParticipantRole = updateParticipantRole;
     window.leaveGroup = leaveGroup;
     // Expose reply functions globally (called from dynamically built HTML onclick attributes)
+    window.openMessageInfo = openMessageInfo;
+    window.closeMsgInfoModal = closeMsgInfoModal;
     window.startReply = startReply;
     window.cancelReply = cancelReply;
     window.scrollToMessage = scrollToMessage;
@@ -3992,6 +4002,84 @@
       }
     }
 
+    // ─── Message Info (per-participant receipts) ─────────────────────────────────
+    let msgInfoTarget = null; // { jid, messageId } while the modal is open
+
+    async function openMessageInfo(messageId) {
+      if (!activeChat) return;
+      msgInfoTarget = { jid: activeChat.id, messageId };
+      document.getElementById('msgInfoBody').innerHTML = '<div style="color:var(--muted);font-size:13px;">Loading…</div>';
+      document.getElementById('msgInfoOverlay').classList.remove('hidden');
+      await refreshMessageInfo();
+    }
+
+    function closeMsgInfoModal() {
+      msgInfoTarget = null;
+      document.getElementById('msgInfoOverlay').classList.add('hidden');
+    }
+
+    async function refreshMessageInfo() {
+      if (!msgInfoTarget) return;
+      const { jid, messageId } = msgInfoTarget;
+      try {
+        const res = await fetch(`${bridgeUrl}/api/messages/${encodeURIComponent(jid)}/${encodeURIComponent(messageId)}/receipts`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to load message details');
+        // Ignore stale responses if the modal moved to another message meanwhile
+        if (!msgInfoTarget || msgInfoTarget.messageId !== messageId) return;
+        renderMessageInfo(data);
+      } catch (e) {
+        const body = document.getElementById('msgInfoBody');
+        if (body) body.innerHTML = `<div style="color:var(--danger);font-size:13px;">${escapeHtml(e.message)}</div>`;
+      }
+    }
+
+    function formatReceiptTime(ms) {
+      if (!ms) return '';
+      const d = new Date(ms);
+      const today = new Date();
+      const sameDay = d.toDateString() === today.toDateString();
+      const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return sameDay ? `today at ${time}` : `${d.toLocaleDateString([], { day: 'numeric', month: 'short' })}, ${time}`;
+    }
+
+    function renderMessageInfo(data) {
+      const body = document.getElementById('msgInfoBody');
+      if (!body) return;
+
+      const participants = data.participants || [];
+      const readBy = participants.filter(p => p.readAt).sort((a, b) => b.readAt - a.readAt);
+      const deliveredTo = participants.filter(p => p.deliveredAt && !p.readAt).sort((a, b) => b.deliveredAt - a.deliveredAt);
+      const pending = participants.filter(p => !p.deliveredAt && !p.readAt);
+
+      const row = (p, time) => `
+        <div style="display:flex;align-items:center;gap:10px;padding:6px 0;">
+          <div style="width:32px;height:32px;border-radius:50%;background:var(--surface2);color:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:600;font-size:13px;flex-shrink:0;">${escapeHtml((p.name || '?').charAt(0).toUpperCase())}</div>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(p.name)}</div>
+            ${time ? `<div style="font-size:11px;color:var(--muted);">${escapeHtml(time)}</div>` : ''}
+          </div>
+        </div>`;
+
+      const section = (title, color, list, timeOf) => `
+        <div>
+          <div style="font-size:12px;font-weight:600;color:${color};border-bottom:1px solid var(--border);padding-bottom:6px;margin-bottom:2px;">${title}</div>
+          ${list.length ? list.map(p => row(p, timeOf(p))).join('') : '<div style="font-size:12px;color:var(--muted);padding:6px 0;">—</div>'}
+        </div>`;
+
+      if (!data.isGroup) {
+        body.innerHTML = '<div style="font-size:13px;color:var(--muted);">Per-participant receipts are only available for group messages.</div>';
+        return;
+      }
+
+      const total = participants.length;
+      body.innerHTML =
+        section(`👁‍🗨 Read by ${readBy.length}/${total}`, 'var(--accent)', readBy, p => formatReceiptTime(p.readAt)) +
+        section(`✓✓ Delivered to ${deliveredTo.length}`, 'var(--muted)', deliveredTo, p => formatReceiptTime(p.deliveredAt)) +
+        section(`🕓 Pending ${pending.length}`, 'var(--muted)', pending, () => '') +
+        '<div style="font-size:11px;color:var(--muted);">Participants with read receipts disabled only ever show as delivered. Messages sent before this feature have no per-participant data.</div>';
+    }
+
     function setupCustomContextMenus() {
       const menu = document.getElementById('customContextMenu');
       if (!menu) return;
@@ -4021,6 +4109,11 @@
           const mediaType = row.dataset.mediaType || 'text';
           const timestamp = Number(row.dataset.timestamp) || 0;
           
+          const isGroupChat = activeChat && (activeChat.type === 'group' || activeChat.type === 'community' || (activeChat.id || '').endsWith('@g.us'));
+          if (fromMe && isGroupChat) {
+            menuHtml += `<div class="context-menu-item" onclick="openMessageInfo('${messageId}')">ℹ️ Details</div>`;
+          }
+
           if (!deleted) {
             menuHtml += `<div class="context-menu-item" onclick="startReply('${messageId}')">↩ Reply</div>`;
 

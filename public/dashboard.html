@@ -134,6 +134,18 @@
     </div>
   </div>
 
+  <!-- Message Info Overlay -->
+  <div class="new-chat-overlay hidden" id="msgInfoOverlay">
+    <div class="new-chat-box" style="max-width: 420px;">
+      <div class="new-chat-header">
+        <div class="new-chat-title">Message Details</div>
+        <button class="new-chat-close" onclick="closeMsgInfoModal()">✕</button>
+      </div>
+      <div id="msgInfoBody" style="padding: 12px 16px 16px; max-height: calc(100vh - 220px); overflow-y: auto; display: flex; flex-direction: column; gap: 16px;">
+      </div>
+    </div>
+  </div>
+
   <!-- Top Bar -->
   <div class="topbar">
     <div style="display:flex;align-items:center;gap:16px">

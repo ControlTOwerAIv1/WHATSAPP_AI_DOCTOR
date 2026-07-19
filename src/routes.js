@@ -416,6 +416,63 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     res.json({ messages: sliced, hasMore: total > sliced.length, total, chat: stores.normalizeChat(stores.chatStore[jid]) || null });
   });
 
+  // Message info: per-participant delivery/read receipts for a sent group
+  // message, with display names resolved server-side. Participants without a
+  // receipt yet come back with null timestamps ("pending").
+  app.get('/api/messages/:jid/:messageId/receipts', (req, res) => {
+    const { jid, messageId } = req.params;
+    const normalizeJid = (j) => {
+      if (!j) return null;
+      const [user, host] = j.split('@');
+      return host ? `${user.split(':')[0]}@${host}` : j;
+    };
+    const toKey = (j) => {
+      if (!j) return null;
+      if (j.endsWith('@lid')) return stores.lidToJid[j] || j;
+      return normalizeJid(j);
+    };
+
+    const threadJids = stores.getThreadJids(jid);
+    let msg = null;
+    for (const t of threadJids) {
+      const found = stores.messageStore[t]?.find(m => m.id === messageId);
+      if (found) { msg = found; break; }
+    }
+    if (!msg) return res.status(404).json({ error: 'Message not found' });
+
+    const receipts = msg.userReceipts || {};
+    const isGroup = jid.endsWith('@g.us');
+    const sock = whatsapp.getSock();
+    const self = new Set();
+    if (sock?.user?.id) self.add(normalizeJid(sock.user.id));
+    if (sock?.user?.lid) self.add(normalizeJid(sock.user.lid));
+
+    const participants = [];
+    if (isGroup && Array.isArray(stores.groupStore[jid]?.participants)) {
+      for (const p of stores.groupStore[jid].participants) {
+        const pid = toKey(typeof p === 'string' ? p : p?.id);
+        if (!pid || self.has(pid)) continue;
+        const r = receipts[pid] || {};
+        participants.push({
+          id: pid,
+          name: stores.resolveContactName(pid) || stores.cleanJidToPhone(pid) || pid,
+          deliveredAt: r.deliveredAt || null,
+          readAt: r.readAt || null,
+          playedAt: r.playedAt || null,
+        });
+      }
+    }
+
+    res.json({
+      messageId,
+      jid,
+      isGroup,
+      status: msg.status ?? null,
+      timestamp: stores.toTimestamp(msg.timestamp),
+      participants,
+    });
+  });
+
   app.get('/api/messages/search', async (req, res) => {
     try {
       const { jid, q } = req.query;

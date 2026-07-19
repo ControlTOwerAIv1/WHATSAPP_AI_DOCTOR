@@ -356,12 +356,106 @@ function handleMessageStatusUpdateInStore(jid, messageId, status, fromMe) {
   return found;
 }
 
+// Canonical key for comparing participant JIDs across @lid / phone / device
+// suffixed forms. LIDs resolve through the lidToJid map when known.
+function receiptKey(jid) {
+  if (!jid) return null;
+  if (jid.endsWith('@lid')) return stores.lidToJid[jid] || jid;
+  try {
+    return jidNormalizedUser(jid);
+  } catch {
+    return jid;
+  }
+}
+
+function selfJidSet() {
+  const set = new Set();
+  if (sock?.user?.id) set.add(jidNormalizedUser(sock.user.id));
+  if (sock?.user?.lid) set.add(jidNormalizedUser(sock.user.lid));
+  return set;
+}
+
+// Receipt timestamps arrive as unix seconds (sometimes Long); store as ms.
+function receiptTsToMs(t) {
+  const n = Number(t);
+  if (!n || n <= 0) return null;
+  return n < 1e12 ? n * 1000 : n;
+}
+
+// Record a per-participant delivery/read receipt on the message payload
+// (msg.userReceipts), emit it to dashboards, and recompute the aggregate tick.
+function recordUserReceipt(remoteJid, messageId, receipt) {
+  const userJid = receiptKey(receipt.userJid);
+  if (!userJid) return;
+  const targetJids = getThreadJids(remoteJid);
+  for (const threadJid of targetJids) {
+    const thread = stores.messageStore[threadJid];
+    if (!thread) continue;
+    const msg = thread.find((item) =>
+      item.id === messageId ||
+      item.latestEditMsgId === messageId ||
+      (item.edits && item.edits.some(e => e.editMsgId === messageId))
+    );
+    if (!msg || !msg.fromMe) continue;
+
+    if (!msg.userReceipts) msg.userReceipts = {};
+    const entry = msg.userReceipts[userJid] || {};
+    const deliveredAt = receiptTsToMs(receipt.receiptTimestamp);
+    const readAt = receiptTsToMs(receipt.readTimestamp);
+    const playedAt = receiptTsToMs(receipt.playedTimestamp);
+    let changed = false;
+    // Each stage only ever fills in once; later stages imply earlier ones.
+    if (deliveredAt && !entry.deliveredAt) { entry.deliveredAt = deliveredAt; changed = true; }
+    if (readAt && !entry.readAt) {
+      entry.readAt = readAt;
+      if (!entry.deliveredAt) entry.deliveredAt = readAt;
+      changed = true;
+    }
+    if (playedAt && !entry.playedAt) {
+      entry.playedAt = playedAt;
+      if (!entry.readAt) entry.readAt = playedAt;
+      if (!entry.deliveredAt) entry.deliveredAt = playedAt;
+      changed = true;
+    }
+    if (!changed) continue;
+
+    msg.userReceipts[userJid] = entry;
+    database.upsertMessage(msg);
+    io.emit('message_receipt', { jid: threadJid, messageId: msg.id, userJid, receipts: msg.userReceipts });
+    recomputeGroupAggregateStatus(threadJid, msg);
+  }
+}
+
+// WhatsApp group tick semantics: double grey tick only once the message is
+// delivered to ALL other participants, blue only once ALL have read it.
+function recomputeGroupAggregateStatus(threadJid, msg) {
+  if (!threadJid.endsWith('@g.us')) return;
+  const meta = stores.groupStore[threadJid];
+  if (!meta || !Array.isArray(meta.participants) || meta.participants.length === 0) return;
+  const self = selfJidSet();
+  const others = meta.participants
+    .map(p => receiptKey(typeof p === 'string' ? p : p?.id))
+    .filter(j => j && !self.has(j));
+  if (others.length === 0) return;
+  const receipts = msg.userReceipts || {};
+  const allRead = others.every(j => receipts[j]?.readAt);
+  const allDelivered = allRead || others.every(j => receipts[j]?.deliveredAt);
+  if (allRead) {
+    handleMessageStatusUpdateInStore(threadJid, msg.id, 4, true);
+  } else if (allDelivered) {
+    handleMessageStatusUpdateInStore(threadJid, msg.id, 3, true);
+  }
+}
+
 // When a contact sends a new message it implies they received and read all
-// our preceding outgoing messages. Upgrade any fromMe message in the thread
-// that still has a status < 4 (read) to status 4 so ticks stay correct even
-// when individual receipt events were missed (e.g. connectivity gaps).
-function updatePrecedingOutgoingMessagesRead(jid) {
+// our preceding outgoing messages. In 1:1 chats that upgrades the aggregate
+// status directly. In groups it only counts as a read receipt from that one
+// sender — the aggregate tick moves only when everyone has read.
+function updatePrecedingOutgoingMessagesRead(jid, senderJid = null) {
   if (!jid) return;
+  const isGroup = jid.endsWith('@g.us');
+  const senderKey = isGroup ? receiptKey(senderJid) : null;
+  if (isGroup && !senderKey) return;
   const targetJids = getThreadJids(jid);
   for (const threadJid of targetJids) {
     const thread = stores.messageStore[threadJid];
@@ -371,6 +465,20 @@ function updatePrecedingOutgoingMessagesRead(jid) {
       if (!msg.fromMe) continue;
       // Only upgrade; never downgrade. Skip already-read or failed.
       if (msg.status === 0 || msg.status >= 4) continue;
+      if (isGroup) {
+        // Implicit read receipt from this sender only.
+        if (!msg.userReceipts) msg.userReceipts = {};
+        const entry = msg.userReceipts[senderKey] || {};
+        if (!entry.readAt) {
+          entry.readAt = Date.now();
+          if (!entry.deliveredAt) entry.deliveredAt = entry.readAt;
+          msg.userReceipts[senderKey] = entry;
+          database.upsertMessage(msg);
+          io.emit('message_receipt', { jid: threadJid, messageId: msg.id, userJid: senderKey, receipts: msg.userReceipts });
+          recomputeGroupAggregateStatus(threadJid, msg);
+        }
+        continue;
+      }
       msg.status = 4; // READ
       database.upsertMessage(msg);
       io.emit('message_status_update', { jid: threadJid, messageId: msg.id, status: 4, fromMe: true });
@@ -976,7 +1084,7 @@ async function connectToWhatsApp() {
         // A reply from the contact means they read our previous messages.
         // Upgrade any preceding outgoing messages that are still below READ.
         if (!parsed.fromMe) {
-          updatePrecedingOutgoingMessagesRead(parsed.jid);
+          updatePrecedingOutgoingMessagesRead(parsed.jid, parsed.participant || null);
         }
         if (!chatStore[parsed.jid]) {
           const resolved = stores.resolveContactName(parsed.jid);
@@ -1055,6 +1163,14 @@ async function connectToWhatsApp() {
     sock.ev.on('message-receipt.update', (updates = []) => {
       for (const { key, receipt } of updates) {
         if (!key?.remoteJid || !key?.id || !receipt) continue;
+        const isGroup = key.remoteJid.endsWith('@g.us');
+        if (isGroup && receipt.userJid) {
+          // Group receipts are per-participant: record them and let the
+          // aggregate tick recompute from full coverage (WhatsApp semantics),
+          // instead of upgrading the tick on the first participant's receipt.
+          recordUserReceipt(key.remoteJid, key.id, receipt);
+          continue;
+        }
         let status = null;
         if (receipt.playedTimestamp) status = 5;
         else if (receipt.readTimestamp) status = 4;
