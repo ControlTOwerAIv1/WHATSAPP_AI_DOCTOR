@@ -1043,7 +1043,13 @@ async function connectToWhatsApp() {
         if (handleProtocolMessage(msg, unwrapped, { isExternal: true })) continue;
 
         const parsedRaw = await parseMessage(msg, isHistory);
-        if (!parsedRaw) continue;
+        if (!parsedRaw) {
+          // Log the drop. A silent `continue` here is what let group messages
+          // carrying a senderKeyDistributionMessage disappear unnoticed: no
+          // error, no trace, and only a relink brought them back.
+          console.log(`[Bridge] Not a content message, skipping ${msg.key?.id} in ${msg.key?.remoteJid} (keys: ${Object.keys(stores.unwrapMessage(msg.message) || {}).join(',')})`);
+          continue;
+        }
 
         // Upsert verified name and push name into contactStore BEFORE normalizing
         const isGroup = parsedRaw.jid?.endsWith('@g.us');
@@ -1122,12 +1128,14 @@ async function connectToWhatsApp() {
         stores.scheduleBroadcastChats();
         stores.saveStore();
        } catch (msgErr) {
-        // One malformed message must not abort the rest of the batch. Baileys
-        // buffers a burst (e.g. group spam) into a single messages.upsert, so an
-        // unguarded throw here silently drops every *remaining* message in the
-        // batch - they only reappear after a relink's full history sync. This
-        // mirrors the per-message guard the messaging-history.set handler has.
-        console.warn('[Bridge] Skipping bad live message:', msgErr?.message);
+        // Keep one bad message from aborting the rest of the batch: Baileys
+        // buffers a burst (e.g. group spam) into a single messages.upsert, so
+        // an unguarded throw took every *remaining* message down with it. This
+        // mirrors the per-message guard messaging-history.set already has.
+        // Log only - deliberately no synthetic placeholder and no resend
+        // request, so nothing invented is ever written into a customer thread.
+        // Anything skipped here is still recovered by the next history sync.
+        console.error(`[Bridge] Failed to process ${msg?.key?.id} in ${msg?.key?.remoteJid}:`, msgErr?.message);
        }
       }
     });
@@ -1652,8 +1660,28 @@ async function parseMessage(raw, skipMedia = false) {
 
   console.log('[DEBUG-EDIT] parseMessage incoming keys:', Object.keys(m), 'message.id:', raw.key?.id);
 
-  const isIgnored = m.protocolMessage || m.senderKeyDistributionMessage || m.reactionMessage || m.peerDataOperationRequestMessage || m.emptyMessage || m.secretEncryptedMessage;
-  if (isIgnored) return null;
+  // Metadata that rides *alongside* real content rather than being a message.
+  // In groups WhatsApp piggybacks senderKeyDistributionMessage onto ordinary
+  // messages whenever the group's sender key needs (re)distributing, so a real
+  // message commonly arrives as { senderKeyDistributionMessage, conversation }.
+  // Testing these keys for mere *presence* silently dropped every such message
+  // - group-only, intermittent (only when the key rotates), no exception and no
+  // log, and recoverable solely by relinking, because the messaging-history.set
+  // handler gets this right (it ignores only when the key stands alone).
+  const ENVELOPE_KEYS = new Set(['senderKeyDistributionMessage', 'messageContextInfo']);
+  // Not user-visible messages when they stand alone. protocolMessage and
+  // secretEncryptedMessage are already consumed by handleProtocolMessage above.
+  const NON_CONTENT_KEYS = new Set([
+    'protocolMessage',
+    'reactionMessage',
+    'peerDataOperationRequestMessage',
+    'emptyMessage',
+    'secretEncryptedMessage',
+  ]);
+  const contentKeys = Object.keys(m).filter((key) => !ENVELOPE_KEYS.has(key));
+  if (contentKeys.length === 0 || contentKeys.every((key) => NON_CONTENT_KEYS.has(key))) {
+    return null;
+  }
 
   let content = '';
   let mediaUrl = null;
