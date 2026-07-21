@@ -4,8 +4,8 @@
   "description": "WhatsApp multi-operator ECHO bridge with full media support",
   "main": "bridge.js",
   "scripts": {
-    "start": "node bridge.js",
-    "dev": "nodemon bridge.js",
+    "start": "node --max-old-space-size=4096 bridge.js",
+    "dev": "nodemon --max-old-space-size=4096 bridge.js",
     "sync:contacts": "node sync_contacts.js"
   },
   "dependencies": {

@@ -626,6 +626,69 @@ function requestEditPlaintextResend(rawMsg) {
     .catch((e) => console.warn('[DEBUG-EDIT] Placeholder resend request failed:', e.message));
 }
 
+// Messages whose live processing threw and for which we've already asked the
+// phone for a fresh copy, so a payload that fails deterministically (a parser
+// bug rather than a transport hiccup) can't spin in a resend loop.
+const failedMessageRecoveryRequested = new Set();
+
+// Recovery for a message we *received* but failed to process. Skipping it would
+// lose it until the next relink's full history sync, so instead - since we still
+// hold its key - do both of the things a plain skip cannot:
+//   1. Persist a placeholder under the real message id, so the message is
+//      visible in the thread (as WhatsApp's own "Waiting for this message")
+//      rather than silently absent, and any gap is obvious to the operator.
+//   2. Ask the phone for a fresh copy via PLACEHOLDER_MESSAGE_RESEND. Baileys
+//      re-emits the response as an ordinary messages.upsert, which flows back
+//      through the handler below and replaces the placeholder with the real
+//      content (see the recoveryPending check in that handler's dedup guard,
+//      which exists so the placeholder can't mask the copy we asked for).
+function recoverFailedMessage(msg, err) {
+  const key = msg?.key;
+  if (!key?.id || !key.remoteJid) {
+    console.error('[Bridge] Unprocessable message with no usable key - cannot recover:', err?.message);
+    return;
+  }
+  const jid = stores.getPreferredJid(key.remoteJid);
+  console.warn(`[Bridge] Live processing failed for ${key.id} in ${jid} (${err?.message}) - recovering.`);
+
+  try {
+    if (!stores.findMessageInThread(jid, key.id)) {
+      stores.addMessageToStore({
+        id: key.id,
+        from: jid,
+        jid,
+        fromMe: Boolean(key.fromMe),
+        participant: msg.participant || key.participant || null,
+        sender: msg.pushName || msg.participant || key.participant || null,
+        content: 'Waiting for this message',
+        mediaType: 'text',
+        timestamp: stores.toTimestamp(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
+        isGroup: jid.endsWith('@g.us'),
+        status: msg.status !== undefined ? msg.status : null,
+        // Marks this as a stand-in that the real copy is allowed to replace.
+        recoveryPending: true,
+        raw: msg.message || null,
+      });
+      stores.syncChatPreviewFromLastMessage(jid);
+      stores.scheduleBroadcastChats();
+    }
+  } catch (placeholderErr) {
+    console.error('[Bridge] Failed to persist recovery placeholder:', placeholderErr.message);
+  }
+
+  if (failedMessageRecoveryRequested.has(key.id)) return;
+  failedMessageRecoveryRequested.add(key.id);
+  if (failedMessageRecoveryRequested.size > 500) failedMessageRecoveryRequested.clear();
+
+  if (!sock || connectionStatus !== 'connected' || typeof sock.requestPlaceholderResend !== 'function') {
+    console.warn(`[Bridge] Cannot request a fresh copy of ${key.id} now (not connected) - it stays a placeholder until the next history sync.`);
+    return;
+  }
+  Promise.resolve(sock.requestPlaceholderResend(key))
+    .then((res) => console.log(`[Bridge] Requested fresh copy of ${key.id} from phone, result:`, res))
+    .catch((e) => console.error(`[Bridge] Resend request failed for ${key.id}:`, e.message));
+}
+
 function handleProtocolMessage(rawMsg, unwrappedMsg, options = {}) {
   // Handle secretEncryptedMessage edit
   if (unwrappedMsg?.secretEncryptedMessage) {
@@ -1079,7 +1142,11 @@ async function connectToWhatsApp() {
         parsed.jid = stores.getPreferredJid(parsed.jid);
         parsed.from = parsed.jid;
         const thread = messageStore[parsed.jid] || [];
-        if (thread.some((existing) => existing.id === parsed.id)) continue;
+        // A recovery placeholder must not make the resent real copy look like a
+        // duplicate - receiving that copy is the entire point of having asked
+        // for it. addMessageToStore upserts by id, so it replaces the stand-in.
+        const duplicate = thread.find((existing) => existing.id === parsed.id);
+        if (duplicate && !duplicate.recoveryPending) continue;
         stores.addMessageToStore(parsed);
         io.emit('message', parsed);
         stores.scheduleStatsEmit();
@@ -1128,14 +1195,13 @@ async function connectToWhatsApp() {
         stores.scheduleBroadcastChats();
         stores.saveStore();
        } catch (msgErr) {
-        // Keep one bad message from aborting the rest of the batch: Baileys
-        // buffers a burst (e.g. group spam) into a single messages.upsert, so
-        // an unguarded throw took every *remaining* message down with it. This
-        // mirrors the per-message guard messaging-history.set already has.
-        // Log only - deliberately no synthetic placeholder and no resend
-        // request, so nothing invented is ever written into a customer thread.
-        // Anything skipped here is still recovered by the next history sync.
-        console.error(`[Bridge] Failed to process ${msg?.key?.id} in ${msg?.key?.remoteJid}:`, msgErr?.message);
+        // Never drop the message. recoverFailedMessage keeps it visible under
+        // its real id and asks the phone to re-send it, so it reaches the app
+        // without waiting for a relink. Catching here additionally stops one
+        // bad message from aborting the rest of the batch - Baileys buffers a
+        // burst (e.g. group spam) into a single messages.upsert, so an
+        // unguarded throw took every *remaining* message in the batch with it.
+        recoverFailedMessage(msg, msgErr);
        }
       }
     });
