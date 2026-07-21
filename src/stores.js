@@ -1236,6 +1236,33 @@ function broadcastChats() {
   }
 }
 
+// Coalesced variants for the high-frequency inbound-message path. Emitting the
+// full chat list (normalizeChat over every chat, per connected operator - and
+// normalizeChat is much heavier for groups, which re-map their whole
+// participant list) plus three COUNT(*) queries on *every* message saturates
+// the single-threaded event loop during a burst (e.g. group spam). That both
+// delays the per-message 'message' emit from flushing (visible lag) and starves
+// timers. The per-message 'message' event still fires immediately in the
+// caller; only the left-panel chat-list/stats refresh is trailing-debounced,
+// and the browser already updates its own chat preview locally on each message.
+let broadcastChatsTimer = null;
+function scheduleBroadcastChats(delay = 200) {
+  if (broadcastChatsTimer) return;
+  broadcastChatsTimer = setTimeout(() => {
+    broadcastChatsTimer = null;
+    broadcastChats();
+  }, delay);
+}
+
+let statsEmitTimer = null;
+function scheduleStatsEmit(delay = 1000) {
+  if (statsEmitTimer) return;
+  statsEmitTimer = setTimeout(() => {
+    statsEmitTimer = null;
+    if (io && database) io.emit('stats', database.counts());
+  }, delay);
+}
+
 function chatDisplayName(jid) {
   let resolvedName = resolveContactName(jid);
 
@@ -1606,6 +1633,8 @@ module.exports = {
   saveStore,
   addMessageToStore,
   broadcastChats,
+  scheduleBroadcastChats,
+  scheduleStatsEmit,
   chatDisplayName,
   ensureChatExists,
   isAssignableChat,
