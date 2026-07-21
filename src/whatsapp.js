@@ -1032,6 +1032,7 @@ async function connectToWhatsApp() {
       const isHistory = type === 'append';
       if (type !== 'notify' && !isHistory) return;
       for (const msg of messages) {
+       try {
         if (!msg.message) continue;
 
         if (msg.key?.fromMe) {
@@ -1075,7 +1076,7 @@ async function connectToWhatsApp() {
         if (thread.some((existing) => existing.id === parsed.id)) continue;
         stores.addMessageToStore(parsed);
         io.emit('message', parsed);
-        io.emit('stats', database.counts());
+        stores.scheduleStatsEmit();
 
         if (!parsed.fromMe && isChatActive(parsed.jid)) {
           markChatAsRead(parsed.jid);
@@ -1118,8 +1119,16 @@ async function connectToWhatsApp() {
           }
         }
         database.upsertChat(chatStore[parsed.jid]);
-        stores.broadcastChats();
+        stores.scheduleBroadcastChats();
         stores.saveStore();
+       } catch (msgErr) {
+        // One malformed message must not abort the rest of the batch. Baileys
+        // buffers a burst (e.g. group spam) into a single messages.upsert, so an
+        // unguarded throw here silently drops every *remaining* message in the
+        // batch - they only reappear after a relink's full history sync. This
+        // mirrors the per-message guard the messaging-history.set handler has.
+        console.warn('[Bridge] Skipping bad live message:', msgErr?.message);
+       }
       }
     });
 
