@@ -416,7 +416,9 @@ async function resolveAllLidsFromStore() {
       // iterations, so cache-hit runs can't starve the event loop.
       const pn = await resolveLidToPhoneAsync(jid, { silent: true, deferSave: true });
       if (pn) resolvedCount++;
-      await new Promise((resolve) => setImmediate(resolve));
+      // Pause 50ms between iterations so Node's V8 Garbage Collector can free
+      // memory allocations generated during array merging and DB updates.
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
     saveFailedResolutions();
     if (resolvedCount > 0) broadcastChats();
@@ -481,11 +483,6 @@ function normalizeChat(chat = {}, operatorId = null) {
             }
           });
         }
-      } else {
-        // Trigger background resolution!
-        resolveLidToPhoneAsync(id).then((pn) => {
-          if (pn) backfillContactNames();
-        });
       }
     }
   }
@@ -523,8 +520,6 @@ function normalizeChat(chat = {}, operatorId = null) {
             const phoneJid = lidToJid[p.id];
             if (phoneJid) {
               resolvedId = phoneJid;
-            } else {
-              resolveLidToPhoneAsync(p.id);
             }
           }
           return {
@@ -570,9 +565,6 @@ function normalizeMessageRecord(msg = {}) {
         const phoneJid = lidToJid[participantJid];
         if (phoneJid) {
           resolvedSender = resolveContactName(phoneJid) || cleanJidToPhone(phoneJid);
-        } else {
-          // Trigger background resolution!
-          resolveLidToPhoneAsync(participantJid);
         }
       } else if (participantJid.endsWith('@s.whatsapp.net')) {
         const lidJid = jidToLid[participantJid];
@@ -910,7 +902,6 @@ function resolveChatStorageId(jid) {
   if (jid.endsWith('@lid')) {
     const phoneJid = lidToJid[jid];
     if (phoneJid) return phoneJid;
-    resolveLidToPhoneAsync(jid);
   }
   return jid;
 }
@@ -920,10 +911,6 @@ function getPreferredJid(jid) {
   if (jid.endsWith('@lid')) {
     const phoneJid = lidToJid[jid];
     if (phoneJid) return phoneJid;
-    else {
-      // Trigger background resolution!
-      resolveLidToPhoneAsync(jid);
-    }
   } else {
     const lidJid = jidToLid[jid];
     if (lidJid && chatStore[lidJid] && !chatStore[jid]) {
