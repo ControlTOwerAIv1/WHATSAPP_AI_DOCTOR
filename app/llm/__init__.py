@@ -1,1 +1,0 @@
-# LLM — Ollama client wrapper

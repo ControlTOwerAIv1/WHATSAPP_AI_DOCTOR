@@ -20,9 +20,6 @@ anthropic==0.42.0
 gspread==6.1.4
 google-auth==2.37.0
 
-# ── WhatsApp via Twilio ────────────────────────────────────────────
-twilio==9.4.0
-
 # ── Agent Graph ────────────────────────────────────────────────────
 langgraph==0.2.60
 langchain-core==0.3.30

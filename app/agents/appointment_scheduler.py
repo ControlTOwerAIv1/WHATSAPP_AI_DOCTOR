@@ -361,24 +361,6 @@ def _present_slots(message: str, slots_text: str, is_urgent: bool, initial_reque
         return f"Here are the available appointment slots:\n\n{slots_text}\n\nReply with a number to book."
 
 
-# ---------------------------------------------------------------------------
-# Confirmation & booking
-# ---------------------------------------------------------------------------
-
-def _looks_like_confirmation(message: str) -> bool:
-    """Heuristic: does this message look like the patient is picking a slot?"""
-    lower = message.lower().strip()
-    signals = [
-        "yes", "confirm", "book", "that one", "first", "second", "third",
-        "option 1", "option 2", "option 3", "slot 1", "slot 2", "slot 3",
-        "1st", "2nd", "3rd", "sounds good", "perfect", "let's go",
-        "i'll take", "go ahead", "number 1", "number 2", "number 3",
-    ]
-    # Also match bare digits
-    if lower in ("1", "2", "3"):
-        return True
-    return any(sig in lower for sig in signals)
-
 
 def _handle_booking_confirmation(
     message: str,
