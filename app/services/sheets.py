@@ -189,17 +189,6 @@ def book_slot(
         return None
 
 
-def get_bookings() -> list[dict]:
-    """Return all rows from the *bookings* worksheet."""
-    try:
-        sheet = _get_spreadsheet()
-        ws = sheet.worksheet("bookings")
-        return ws.get_all_records()
-    except Exception as exc:
-        logger.error("bookings_fetch_failed", error=str(exc))
-        return []
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

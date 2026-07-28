@@ -1,7 +1,8 @@
 """Quick diagnostic: dump availability sheet data to see why 0 slots are open."""
 
 import sys
-sys.path.insert(0, "c:\\projects-imp\\WHATSAPP_AI_AGENT\\app")
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from datetime import datetime, timezone
 import gspread
