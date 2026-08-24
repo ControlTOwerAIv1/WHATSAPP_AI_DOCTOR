@@ -1,0 +1,391 @@
+slot_id	doctor_name	specialty	date	start_time	end_time	status
+S001	Sarah Chen	General Practice	2026-08-02	09:00	09:30	open
+S002	Sarah Chen	General Practice	2026-08-02	09:30	10:00	open
+S003	Sarah Chen	General Practice	2026-08-02	10:00	10:30	open
+S004	Sarah Chen	General Practice	2026-08-02	10:30	11:00	open
+S005	Sarah Chen	General Practice	2026-08-02	11:00	11:30	open
+S006	Sarah Chen	General Practice	2026-08-02	11:30	12:00	open
+S007	Amira Hassan	Pediatrics	2026-08-02	10:00	10:30	open
+S008	Amira Hassan	Pediatrics	2026-08-02	10:30	11:00	booked
+S009	Amira Hassan	Pediatrics	2026-08-02	11:00	11:30	open
+S010	Amira Hassan	Pediatrics	2026-08-02	11:30	12:00	open
+S011	Amira Hassan	Pediatrics	2026-08-02	14:00	14:30	open
+S012	Amira Hassan	Pediatrics	2026-08-02	14:30	15:00	open
+S013	James Patel	Cardiology	2026-08-02	11:00	11:30	open
+S014	James Patel	Cardiology	2026-08-02	11:30	12:00	open
+S015	James Patel	Cardiology	2026-08-02	14:00	14:30	open
+S016	James Patel	Cardiology	2026-08-02	14:30	15:00	open
+S017	James Patel	Cardiology	2026-08-02	15:00	15:30	booked
+S018	James Patel	Cardiology	2026-08-02	15:30	16:00	open
+S019	Elena Rostova	Dermatology	2026-08-02	09:00	09:30	open
+S020	Elena Rostova	Dermatology	2026-08-02	09:30	10:00	open
+S021	Elena Rostova	Dermatology	2026-08-02	10:00	10:30	open
+S022	Elena Rostova	Dermatology	2026-08-02	10:30	11:00	open
+S023	Elena Rostova	Dermatology	2026-08-02	11:00	11:30	open
+S024	Elena Rostova	Dermatology	2026-08-02	11:30	12:00	open
+S025	Marcus Vance	Orthopedics	2026-08-02	10:00	10:30	open
+S026	Marcus Vance	Orthopedics	2026-08-02	10:30	11:00	booked
+S027	Marcus Vance	Orthopedics	2026-08-02	11:00	11:30	open
+S028	Marcus Vance	Orthopedics	2026-08-02	11:30	12:00	open
+S029	Marcus Vance	Orthopedics	2026-08-02	14:00	14:30	open
+S030	Marcus Vance	Orthopedics	2026-08-02	14:30	15:00	open
+S031	Sarah Chen	General Practice	2026-08-03	09:00	09:30	open
+S032	Sarah Chen	General Practice	2026-08-03	09:30	10:00	open
+S033	Sarah Chen	General Practice	2026-08-03	10:00	10:30	open
+S034	Sarah Chen	General Practice	2026-08-03	10:30	11:00	open
+S035	Sarah Chen	General Practice	2026-08-03	11:00	11:30	booked
+S036	Sarah Chen	General Practice	2026-08-03	11:30	12:00	open
+S037	Amira Hassan	Pediatrics	2026-08-03	10:00	10:30	open
+S038	Amira Hassan	Pediatrics	2026-08-03	10:30	11:00	open
+S039	Amira Hassan	Pediatrics	2026-08-03	11:00	11:30	open
+S040	Amira Hassan	Pediatrics	2026-08-03	11:30	12:00	open
+S041	Amira Hassan	Pediatrics	2026-08-03	14:00	14:30	open
+S042	Amira Hassan	Pediatrics	2026-08-03	14:30	15:00	open
+S043	James Patel	Cardiology	2026-08-03	11:00	11:30	open
+S044	James Patel	Cardiology	2026-08-03	11:30	12:00	booked
+S045	James Patel	Cardiology	2026-08-03	14:00	14:30	open
+S046	James Patel	Cardiology	2026-08-03	14:30	15:00	open
+S047	James Patel	Cardiology	2026-08-03	15:00	15:30	open
+S048	James Patel	Cardiology	2026-08-03	15:30	16:00	open
+S049	Elena Rostova	Dermatology	2026-08-03	09:00	09:30	open
+S050	Elena Rostova	Dermatology	2026-08-03	09:30	10:00	open
+S051	Elena Rostova	Dermatology	2026-08-03	10:00	10:30	open
+S052	Elena Rostova	Dermatology	2026-08-03	10:30	11:00	open
+S053	Elena Rostova	Dermatology	2026-08-03	11:00	11:30	booked
+S054	Elena Rostova	Dermatology	2026-08-03	11:30	12:00	open
+S055	Marcus Vance	Orthopedics	2026-08-03	10:00	10:30	open
+S056	Marcus Vance	Orthopedics	2026-08-03	10:30	11:00	open
+S057	Marcus Vance	Orthopedics	2026-08-03	11:00	11:30	open
+S058	Marcus Vance	Orthopedics	2026-08-03	11:30	12:00	open
+S059	Marcus Vance	Orthopedics	2026-08-03	14:00	14:30	open
+S060	Marcus Vance	Orthopedics	2026-08-03	14:30	15:00	open
+S061	Sarah Chen	General Practice	2026-08-04	09:00	09:30	open
+S062	Sarah Chen	General Practice	2026-08-04	09:30	10:00	booked
+S063	Sarah Chen	General Practice	2026-08-04	10:00	10:30	open
+S064	Sarah Chen	General Practice	2026-08-04	10:30	11:00	open
+S065	Sarah Chen	General Practice	2026-08-04	11:00	11:30	open
+S066	Sarah Chen	General Practice	2026-08-04	11:30	12:00	open
+S067	Amira Hassan	Pediatrics	2026-08-04	10:00	10:30	open
+S068	Amira Hassan	Pediatrics	2026-08-04	10:30	11:00	open
+S069	Amira Hassan	Pediatrics	2026-08-04	11:00	11:30	open
+S070	Amira Hassan	Pediatrics	2026-08-04	11:30	12:00	open
+S071	Amira Hassan	Pediatrics	2026-08-04	14:00	14:30	booked
+S072	Amira Hassan	Pediatrics	2026-08-04	14:30	15:00	open
+S073	James Patel	Cardiology	2026-08-04	11:00	11:30	open
+S074	James Patel	Cardiology	2026-08-04	11:30	12:00	open
+S075	James Patel	Cardiology	2026-08-04	14:00	14:30	open
+S076	James Patel	Cardiology	2026-08-04	14:30	15:00	open
+S077	James Patel	Cardiology	2026-08-04	15:00	15:30	open
+S078	James Patel	Cardiology	2026-08-04	15:30	16:00	open
+S079	Elena Rostova	Dermatology	2026-08-04	09:00	09:30	open
+S080	Elena Rostova	Dermatology	2026-08-04	09:30	10:00	booked
+S081	Elena Rostova	Dermatology	2026-08-04	10:00	10:30	open
+S082	Elena Rostova	Dermatology	2026-08-04	10:30	11:00	open
+S083	Elena Rostova	Dermatology	2026-08-04	11:00	11:30	open
+S084	Elena Rostova	Dermatology	2026-08-04	11:30	12:00	open
+S085	Marcus Vance	Orthopedics	2026-08-04	10:00	10:30	open
+S086	Marcus Vance	Orthopedics	2026-08-04	10:30	11:00	open
+S087	Marcus Vance	Orthopedics	2026-08-04	11:00	11:30	open
+S088	Marcus Vance	Orthopedics	2026-08-04	11:30	12:00	open
+S089	Marcus Vance	Orthopedics	2026-08-04	14:00	14:30	booked
+S090	Marcus Vance	Orthopedics	2026-08-04	14:30	15:00	open
+S091	Sarah Chen	General Practice	2026-08-05	09:00	09:30	open
+S092	Sarah Chen	General Practice	2026-08-05	09:30	10:00	open
+S093	Sarah Chen	General Practice	2026-08-05	10:00	10:30	open
+S094	Sarah Chen	General Practice	2026-08-05	10:30	11:00	open
+S095	Sarah Chen	General Practice	2026-08-05	11:00	11:30	open
+S096	Sarah Chen	General Practice	2026-08-05	11:30	12:00	open
+S097	Amira Hassan	Pediatrics	2026-08-05	10:00	10:30	open
+S098	Amira Hassan	Pediatrics	2026-08-05	10:30	11:00	booked
+S099	Amira Hassan	Pediatrics	2026-08-05	11:00	11:30	open
+S100	Amira Hassan	Pediatrics	2026-08-05	11:30	12:00	open
+S101	Amira Hassan	Pediatrics	2026-08-05	14:00	14:30	open
+S102	Amira Hassan	Pediatrics	2026-08-05	14:30	15:00	open
+S103	James Patel	Cardiology	2026-08-05	11:00	11:30	open
+S104	James Patel	Cardiology	2026-08-05	11:30	12:00	open
+S105	James Patel	Cardiology	2026-08-05	14:00	14:30	open
+S106	James Patel	Cardiology	2026-08-05	14:30	15:00	open
+S107	James Patel	Cardiology	2026-08-05	15:00	15:30	booked
+S108	James Patel	Cardiology	2026-08-05	15:30	16:00	open
+S109	Elena Rostova	Dermatology	2026-08-05	09:00	09:30	open
+S110	Elena Rostova	Dermatology	2026-08-05	09:30	10:00	open
+S111	Elena Rostova	Dermatology	2026-08-05	10:00	10:30	open
+S112	Elena Rostova	Dermatology	2026-08-05	10:30	11:00	open
+S113	Elena Rostova	Dermatology	2026-08-05	11:00	11:30	open
+S114	Elena Rostova	Dermatology	2026-08-05	11:30	12:00	open
+S115	Marcus Vance	Orthopedics	2026-08-05	10:00	10:30	open
+S116	Marcus Vance	Orthopedics	2026-08-05	10:30	11:00	booked
+S117	Marcus Vance	Orthopedics	2026-08-05	11:00	11:30	open
+S118	Marcus Vance	Orthopedics	2026-08-05	11:30	12:00	open
+S119	Marcus Vance	Orthopedics	2026-08-05	14:00	14:30	open
+S120	Marcus Vance	Orthopedics	2026-08-05	14:30	15:00	open
+S121	Sarah Chen	General Practice	2026-08-06	09:00	09:30	open
+S122	Sarah Chen	General Practice	2026-08-06	09:30	10:00	open
+S123	Sarah Chen	General Practice	2026-08-06	10:00	10:30	open
+S124	Sarah Chen	General Practice	2026-08-06	10:30	11:00	open
+S125	Sarah Chen	General Practice	2026-08-06	11:00	11:30	booked
+S126	Sarah Chen	General Practice	2026-08-06	11:30	12:00	open
+S127	Amira Hassan	Pediatrics	2026-08-06	10:00	10:30	open
+S128	Amira Hassan	Pediatrics	2026-08-06	10:30	11:00	open
+S129	Amira Hassan	Pediatrics	2026-08-06	11:00	11:30	open
+S130	Amira Hassan	Pediatrics	2026-08-06	11:30	12:00	open
+S131	Amira Hassan	Pediatrics	2026-08-06	14:00	14:30	open
+S132	Amira Hassan	Pediatrics	2026-08-06	14:30	15:00	open
+S133	James Patel	Cardiology	2026-08-06	11:00	11:30	open
+S134	James Patel	Cardiology	2026-08-06	11:30	12:00	booked
+S135	James Patel	Cardiology	2026-08-06	14:00	14:30	open
+S136	James Patel	Cardiology	2026-08-06	14:30	15:00	open
+S137	James Patel	Cardiology	2026-08-06	15:00	15:30	open
+S138	James Patel	Cardiology	2026-08-06	15:30	16:00	open
+S139	Elena Rostova	Dermatology	2026-08-06	09:00	09:30	open
+S140	Elena Rostova	Dermatology	2026-08-06	09:30	10:00	open
+S141	Elena Rostova	Dermatology	2026-08-06	10:00	10:30	open
+S142	Elena Rostova	Dermatology	2026-08-06	10:30	11:00	open
+S143	Elena Rostova	Dermatology	2026-08-06	11:00	11:30	booked
+S144	Elena Rostova	Dermatology	2026-08-06	11:30	12:00	open
+S145	Marcus Vance	Orthopedics	2026-08-06	10:00	10:30	open
+S146	Marcus Vance	Orthopedics	2026-08-06	10:30	11:00	open
+S147	Marcus Vance	Orthopedics	2026-08-06	11:00	11:30	open
+S148	Marcus Vance	Orthopedics	2026-08-06	11:30	12:00	open
+S149	Marcus Vance	Orthopedics	2026-08-06	14:00	14:30	open
+S150	Marcus Vance	Orthopedics	2026-08-06	14:30	15:00	open
+S151	Sarah Chen	General Practice	2026-08-07	09:00	09:30	open
+S152	Sarah Chen	General Practice	2026-08-07	09:30	10:00	booked
+S153	Sarah Chen	General Practice	2026-08-07	10:00	10:30	open
+S154	Sarah Chen	General Practice	2026-08-07	10:30	11:00	open
+S155	Sarah Chen	General Practice	2026-08-07	11:00	11:30	open
+S156	Sarah Chen	General Practice	2026-08-07	11:30	12:00	open
+S157	Amira Hassan	Pediatrics	2026-08-07	10:00	10:30	open
+S158	Amira Hassan	Pediatrics	2026-08-07	10:30	11:00	open
+S159	Amira Hassan	Pediatrics	2026-08-07	11:00	11:30	open
+S160	Amira Hassan	Pediatrics	2026-08-07	11:30	12:00	open
+S161	Amira Hassan	Pediatrics	2026-08-07	14:00	14:30	booked
+S162	Amira Hassan	Pediatrics	2026-08-07	14:30	15:00	open
+S163	James Patel	Cardiology	2026-08-07	11:00	11:30	open
+S164	James Patel	Cardiology	2026-08-07	11:30	12:00	open
+S165	James Patel	Cardiology	2026-08-07	14:00	14:30	open
+S166	James Patel	Cardiology	2026-08-07	14:30	15:00	open
+S167	James Patel	Cardiology	2026-08-07	15:00	15:30	open
+S168	James Patel	Cardiology	2026-08-07	15:30	16:00	open
+S169	Elena Rostova	Dermatology	2026-08-07	09:00	09:30	open
+S170	Elena Rostova	Dermatology	2026-08-07	09:30	10:00	booked
+S171	Elena Rostova	Dermatology	2026-08-07	10:00	10:30	open
+S172	Elena Rostova	Dermatology	2026-08-07	10:30	11:00	open
+S173	Elena Rostova	Dermatology	2026-08-07	11:00	11:30	open
+S174	Elena Rostova	Dermatology	2026-08-07	11:30	12:00	open
+S175	Marcus Vance	Orthopedics	2026-08-07	10:00	10:30	open
+S176	Marcus Vance	Orthopedics	2026-08-07	10:30	11:00	open
+S177	Marcus Vance	Orthopedics	2026-08-07	11:00	11:30	open
+S178	Marcus Vance	Orthopedics	2026-08-07	11:30	12:00	open
+S179	Marcus Vance	Orthopedics	2026-08-07	14:00	14:30	booked
+S180	Marcus Vance	Orthopedics	2026-08-07	14:30	15:00	open
+S181	Sarah Chen	General Practice	2026-08-08	09:00	09:30	open
+S182	Sarah Chen	General Practice	2026-08-08	09:30	10:00	open
+S183	Sarah Chen	General Practice	2026-08-08	10:00	10:30	open
+S184	Sarah Chen	General Practice	2026-08-08	10:30	11:00	open
+S185	Sarah Chen	General Practice	2026-08-08	11:00	11:30	open
+S186	Sarah Chen	General Practice	2026-08-08	11:30	12:00	open
+S187	Amira Hassan	Pediatrics	2026-08-08	10:00	10:30	open
+S188	Amira Hassan	Pediatrics	2026-08-08	10:30	11:00	booked
+S189	Amira Hassan	Pediatrics	2026-08-08	11:00	11:30	open
+S190	Amira Hassan	Pediatrics	2026-08-08	11:30	12:00	open
+S191	Amira Hassan	Pediatrics	2026-08-08	14:00	14:30	open
+S192	Amira Hassan	Pediatrics	2026-08-08	14:30	15:00	open
+S193	James Patel	Cardiology	2026-08-08	11:00	11:30	open
+S194	James Patel	Cardiology	2026-08-08	11:30	12:00	open
+S195	James Patel	Cardiology	2026-08-08	14:00	14:30	open
+S196	James Patel	Cardiology	2026-08-08	14:30	15:00	open
+S197	James Patel	Cardiology	2026-08-08	15:00	15:30	booked
+S198	James Patel	Cardiology	2026-08-08	15:30	16:00	open
+S199	Elena Rostova	Dermatology	2026-08-08	09:00	09:30	open
+S200	Elena Rostova	Dermatology	2026-08-08	09:30	10:00	open
+S201	Elena Rostova	Dermatology	2026-08-08	10:00	10:30	open
+S202	Elena Rostova	Dermatology	2026-08-08	10:30	11:00	open
+S203	Elena Rostova	Dermatology	2026-08-08	11:00	11:30	open
+S204	Elena Rostova	Dermatology	2026-08-08	11:30	12:00	open
+S205	Marcus Vance	Orthopedics	2026-08-08	10:00	10:30	open
+S206	Marcus Vance	Orthopedics	2026-08-08	10:30	11:00	booked
+S207	Marcus Vance	Orthopedics	2026-08-08	11:00	11:30	open
+S208	Marcus Vance	Orthopedics	2026-08-08	11:30	12:00	open
+S209	Marcus Vance	Orthopedics	2026-08-08	14:00	14:30	open
+S210	Marcus Vance	Orthopedics	2026-08-08	14:30	15:00	open
+S211	Sarah Chen	General Practice	2026-08-10	09:00	09:30	open
+S212	Sarah Chen	General Practice	2026-08-10	09:30	10:00	open
+S213	Sarah Chen	General Practice	2026-08-10	10:00	10:30	open
+S214	Sarah Chen	General Practice	2026-08-10	10:30	11:00	open
+S215	Sarah Chen	General Practice	2026-08-10	11:00	11:30	booked
+S216	Sarah Chen	General Practice	2026-08-10	11:30	12:00	open
+S217	Amira Hassan	Pediatrics	2026-08-10	10:00	10:30	open
+S218	Amira Hassan	Pediatrics	2026-08-10	10:30	11:00	open
+S219	Amira Hassan	Pediatrics	2026-08-10	11:00	11:30	open
+S220	Amira Hassan	Pediatrics	2026-08-10	11:30	12:00	open
+S221	Amira Hassan	Pediatrics	2026-08-10	14:00	14:30	open
+S222	Amira Hassan	Pediatrics	2026-08-10	14:30	15:00	open
+S223	James Patel	Cardiology	2026-08-10	11:00	11:30	open
+S224	James Patel	Cardiology	2026-08-10	11:30	12:00	booked
+S225	James Patel	Cardiology	2026-08-10	14:00	14:30	open
+S226	James Patel	Cardiology	2026-08-10	14:30	15:00	open
+S227	James Patel	Cardiology	2026-08-10	15:00	15:30	open
+S228	James Patel	Cardiology	2026-08-10	15:30	16:00	open
+S229	Elena Rostova	Dermatology	2026-08-10	09:00	09:30	open
+S230	Elena Rostova	Dermatology	2026-08-10	09:30	10:00	open
+S231	Elena Rostova	Dermatology	2026-08-10	10:00	10:30	open
+S232	Elena Rostova	Dermatology	2026-08-10	10:30	11:00	open
+S233	Elena Rostova	Dermatology	2026-08-10	11:00	11:30	booked
+S234	Elena Rostova	Dermatology	2026-08-10	11:30	12:00	open
+S235	Marcus Vance	Orthopedics	2026-08-10	10:00	10:30	open
+S236	Marcus Vance	Orthopedics	2026-08-10	10:30	11:00	open
+S237	Marcus Vance	Orthopedics	2026-08-10	11:00	11:30	open
+S238	Marcus Vance	Orthopedics	2026-08-10	11:30	12:00	open
+S239	Marcus Vance	Orthopedics	2026-08-10	14:00	14:30	open
+S240	Marcus Vance	Orthopedics	2026-08-10	14:30	15:00	open
+S241	Sarah Chen	General Practice	2026-08-11	09:00	09:30	open
+S242	Sarah Chen	General Practice	2026-08-11	09:30	10:00	booked
+S243	Sarah Chen	General Practice	2026-08-11	10:00	10:30	open
+S244	Sarah Chen	General Practice	2026-08-11	10:30	11:00	open
+S245	Sarah Chen	General Practice	2026-08-11	11:00	11:30	open
+S246	Sarah Chen	General Practice	2026-08-11	11:30	12:00	open
+S247	Amira Hassan	Pediatrics	2026-08-11	10:00	10:30	open
+S248	Amira Hassan	Pediatrics	2026-08-11	10:30	11:00	open
+S249	Amira Hassan	Pediatrics	2026-08-11	11:00	11:30	open
+S250	Amira Hassan	Pediatrics	2026-08-11	11:30	12:00	open
+S251	Amira Hassan	Pediatrics	2026-08-11	14:00	14:30	booked
+S252	Amira Hassan	Pediatrics	2026-08-11	14:30	15:00	open
+S253	James Patel	Cardiology	2026-08-11	11:00	11:30	open
+S254	James Patel	Cardiology	2026-08-11	11:30	12:00	open
+S255	James Patel	Cardiology	2026-08-11	14:00	14:30	open
+S256	James Patel	Cardiology	2026-08-11	14:30	15:00	open
+S257	James Patel	Cardiology	2026-08-11	15:00	15:30	open
+S258	James Patel	Cardiology	2026-08-11	15:30	16:00	open
+S259	Elena Rostova	Dermatology	2026-08-11	09:00	09:30	open
+S260	Elena Rostova	Dermatology	2026-08-11	09:30	10:00	booked
+S261	Elena Rostova	Dermatology	2026-08-11	10:00	10:30	open
+S262	Elena Rostova	Dermatology	2026-08-11	10:30	11:00	open
+S263	Elena Rostova	Dermatology	2026-08-11	11:00	11:30	open
+S264	Elena Rostova	Dermatology	2026-08-11	11:30	12:00	open
+S265	Marcus Vance	Orthopedics	2026-08-11	10:00	10:30	open
+S266	Marcus Vance	Orthopedics	2026-08-11	10:30	11:00	open
+S267	Marcus Vance	Orthopedics	2026-08-11	11:00	11:30	open
+S268	Marcus Vance	Orthopedics	2026-08-11	11:30	12:00	open
+S269	Marcus Vance	Orthopedics	2026-08-11	14:00	14:30	booked
+S270	Marcus Vance	Orthopedics	2026-08-11	14:30	15:00	open
+S271	Sarah Chen	General Practice	2026-08-12	09:00	09:30	open
+S272	Sarah Chen	General Practice	2026-08-12	09:30	10:00	open
+S273	Sarah Chen	General Practice	2026-08-12	10:00	10:30	open
+S274	Sarah Chen	General Practice	2026-08-12	10:30	11:00	open
+S275	Sarah Chen	General Practice	2026-08-12	11:00	11:30	open
+S276	Sarah Chen	General Practice	2026-08-12	11:30	12:00	open
+S277	Amira Hassan	Pediatrics	2026-08-12	10:00	10:30	open
+S278	Amira Hassan	Pediatrics	2026-08-12	10:30	11:00	booked
+S279	Amira Hassan	Pediatrics	2026-08-12	11:00	11:30	open
+S280	Amira Hassan	Pediatrics	2026-08-12	11:30	12:00	open
+S281	Amira Hassan	Pediatrics	2026-08-12	14:00	14:30	open
+S282	Amira Hassan	Pediatrics	2026-08-12	14:30	15:00	open
+S283	James Patel	Cardiology	2026-08-12	11:00	11:30	open
+S284	James Patel	Cardiology	2026-08-12	11:30	12:00	open
+S285	James Patel	Cardiology	2026-08-12	14:00	14:30	open
+S286	James Patel	Cardiology	2026-08-12	14:30	15:00	open
+S287	James Patel	Cardiology	2026-08-12	15:00	15:30	booked
+S288	James Patel	Cardiology	2026-08-12	15:30	16:00	open
+S289	Elena Rostova	Dermatology	2026-08-12	09:00	09:30	open
+S290	Elena Rostova	Dermatology	2026-08-12	09:30	10:00	open
+S291	Elena Rostova	Dermatology	2026-08-12	10:00	10:30	open
+S292	Elena Rostova	Dermatology	2026-08-12	10:30	11:00	open
+S293	Elena Rostova	Dermatology	2026-08-12	11:00	11:30	open
+S294	Elena Rostova	Dermatology	2026-08-12	11:30	12:00	open
+S295	Marcus Vance	Orthopedics	2026-08-12	10:00	10:30	open
+S296	Marcus Vance	Orthopedics	2026-08-12	10:30	11:00	booked
+S297	Marcus Vance	Orthopedics	2026-08-12	11:00	11:30	open
+S298	Marcus Vance	Orthopedics	2026-08-12	11:30	12:00	open
+S299	Marcus Vance	Orthopedics	2026-08-12	14:00	14:30	open
+S300	Marcus Vance	Orthopedics	2026-08-12	14:30	15:00	open
+S301	Sarah Chen	General Practice	2026-08-13	09:00	09:30	open
+S302	Sarah Chen	General Practice	2026-08-13	09:30	10:00	open
+S303	Sarah Chen	General Practice	2026-08-13	10:00	10:30	open
+S304	Sarah Chen	General Practice	2026-08-13	10:30	11:00	open
+S305	Sarah Chen	General Practice	2026-08-13	11:00	11:30	booked
+S306	Sarah Chen	General Practice	2026-08-13	11:30	12:00	open
+S307	Amira Hassan	Pediatrics	2026-08-13	10:00	10:30	open
+S308	Amira Hassan	Pediatrics	2026-08-13	10:30	11:00	open
+S309	Amira Hassan	Pediatrics	2026-08-13	11:00	11:30	open
+S310	Amira Hassan	Pediatrics	2026-08-13	11:30	12:00	open
+S311	Amira Hassan	Pediatrics	2026-08-13	14:00	14:30	open
+S312	Amira Hassan	Pediatrics	2026-08-13	14:30	15:00	open
+S313	James Patel	Cardiology	2026-08-13	11:00	11:30	open
+S314	James Patel	Cardiology	2026-08-13	11:30	12:00	booked
+S315	James Patel	Cardiology	2026-08-13	14:00	14:30	open
+S316	James Patel	Cardiology	2026-08-13	14:30	15:00	open
+S317	James Patel	Cardiology	2026-08-13	15:00	15:30	open
+S318	James Patel	Cardiology	2026-08-13	15:30	16:00	open
+S319	Elena Rostova	Dermatology	2026-08-13	09:00	09:30	open
+S320	Elena Rostova	Dermatology	2026-08-13	09:30	10:00	open
+S321	Elena Rostova	Dermatology	2026-08-13	10:00	10:30	open
+S322	Elena Rostova	Dermatology	2026-08-13	10:30	11:00	open
+S323	Elena Rostova	Dermatology	2026-08-13	11:00	11:30	booked
+S324	Elena Rostova	Dermatology	2026-08-13	11:30	12:00	open
+S325	Marcus Vance	Orthopedics	2026-08-13	10:00	10:30	open
+S326	Marcus Vance	Orthopedics	2026-08-13	10:30	11:00	open
+S327	Marcus Vance	Orthopedics	2026-08-13	11:00	11:30	open
+S328	Marcus Vance	Orthopedics	2026-08-13	11:30	12:00	open
+S329	Marcus Vance	Orthopedics	2026-08-13	14:00	14:30	open
+S330	Marcus Vance	Orthopedics	2026-08-13	14:30	15:00	open
+S331	Sarah Chen	General Practice	2026-08-14	09:00	09:30	open
+S332	Sarah Chen	General Practice	2026-08-14	09:30	10:00	booked
+S333	Sarah Chen	General Practice	2026-08-14	10:00	10:30	open
+S334	Sarah Chen	General Practice	2026-08-14	10:30	11:00	open
+S335	Sarah Chen	General Practice	2026-08-14	11:00	11:30	open
+S336	Sarah Chen	General Practice	2026-08-14	11:30	12:00	open
+S337	Amira Hassan	Pediatrics	2026-08-14	10:00	10:30	open
+S338	Amira Hassan	Pediatrics	2026-08-14	10:30	11:00	open
+S339	Amira Hassan	Pediatrics	2026-08-14	11:00	11:30	open
+S340	Amira Hassan	Pediatrics	2026-08-14	11:30	12:00	open
+S341	Amira Hassan	Pediatrics	2026-08-14	14:00	14:30	booked
+S342	Amira Hassan	Pediatrics	2026-08-14	14:30	15:00	open
+S343	James Patel	Cardiology	2026-08-14	11:00	11:30	open
+S344	James Patel	Cardiology	2026-08-14	11:30	12:00	open
+S345	James Patel	Cardiology	2026-08-14	14:00	14:30	open
+S346	James Patel	Cardiology	2026-08-14	14:30	15:00	open
+S347	James Patel	Cardiology	2026-08-14	15:00	15:30	open
+S348	James Patel	Cardiology	2026-08-14	15:30	16:00	open
+S349	Elena Rostova	Dermatology	2026-08-14	09:00	09:30	open
+S350	Elena Rostova	Dermatology	2026-08-14	09:30	10:00	booked
+S351	Elena Rostova	Dermatology	2026-08-14	10:00	10:30	open
+S352	Elena Rostova	Dermatology	2026-08-14	10:30	11:00	open
+S353	Elena Rostova	Dermatology	2026-08-14	11:00	11:30	open
+S354	Elena Rostova	Dermatology	2026-08-14	11:30	12:00	open
+S355	Marcus Vance	Orthopedics	2026-08-14	10:00	10:30	open
+S356	Marcus Vance	Orthopedics	2026-08-14	10:30	11:00	open
+S357	Marcus Vance	Orthopedics	2026-08-14	11:00	11:30	open
+S358	Marcus Vance	Orthopedics	2026-08-14	11:30	12:00	open
+S359	Marcus Vance	Orthopedics	2026-08-14	14:00	14:30	booked
+S360	Marcus Vance	Orthopedics	2026-08-14	14:30	15:00	open
+S361	Sarah Chen	General Practice	2026-08-15	09:00	09:30	open
+S362	Sarah Chen	General Practice	2026-08-15	09:30	10:00	open
+S363	Sarah Chen	General Practice	2026-08-15	10:00	10:30	open
+S364	Sarah Chen	General Practice	2026-08-15	10:30	11:00	open
+S365	Sarah Chen	General Practice	2026-08-15	11:00	11:30	open
+S366	Sarah Chen	General Practice	2026-08-15	11:30	12:00	open
+S367	Amira Hassan	Pediatrics	2026-08-15	10:00	10:30	open
+S368	Amira Hassan	Pediatrics	2026-08-15	10:30	11:00	booked
+S369	Amira Hassan	Pediatrics	2026-08-15	11:00	11:30	open
+S370	Amira Hassan	Pediatrics	2026-08-15	11:30	12:00	open
+S371	Amira Hassan	Pediatrics	2026-08-15	14:00	14:30	open
+S372	Amira Hassan	Pediatrics	2026-08-15	14:30	15:00	open
+S373	James Patel	Cardiology	2026-08-15	11:00	11:30	open
+S374	James Patel	Cardiology	2026-08-15	11:30	12:00	open
+S375	James Patel	Cardiology	2026-08-15	14:00	14:30	open
+S376	James Patel	Cardiology	2026-08-15	14:30	15:00	open
+S377	James Patel	Cardiology	2026-08-15	15:00	15:30	booked
+S378	James Patel	Cardiology	2026-08-15	15:30	16:00	open
+S379	Elena Rostova	Dermatology	2026-08-15	09:00	09:30	open
+S380	Elena Rostova	Dermatology	2026-08-15	09:30	10:00	open
+S381	Elena Rostova	Dermatology	2026-08-15	10:00	10:30	open
+S382	Elena Rostova	Dermatology	2026-08-15	10:30	11:00	open
+S383	Elena Rostova	Dermatology	2026-08-15	11:00	11:30	open
+S384	Elena Rostova	Dermatology	2026-08-15	11:30	12:00	open
+S385	Marcus Vance	Orthopedics	2026-08-15	10:00	10:30	open
+S386	Marcus Vance	Orthopedics	2026-08-15	10:30	11:00	booked
+S387	Marcus Vance	Orthopedics	2026-08-15	11:00	11:30	open
+S388	Marcus Vance	Orthopedics	2026-08-15	11:30	12:00	open
+S389	Marcus Vance	Orthopedics	2026-08-15	14:00	14:30	open
+S390	Marcus Vance	Orthopedics	2026-08-15	14:30	15:00	open

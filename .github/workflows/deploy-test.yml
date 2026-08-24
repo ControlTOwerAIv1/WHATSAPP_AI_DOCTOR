@@ -1,0 +1,30 @@
+name: Deploy to Contabo Test Server
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Contabo Test Server via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.CONTABO_HOST }}
+          username: ${{ secrets.CONTABO_USER }}
+          password: ${{ secrets.CONTABO_PASSWORD }}
+          port: 22
+          script: |
+            mkdir -p /var/www/wa-relay-test
+            cd /var/www/wa-relay-test
+            if [ ! -d ".git" ]; then
+              git init
+              git remote add origin https://github.com/ControlTOwerAIv1/whatsapp-relay.git
+            fi
+            git fetch origin master
+            git reset --hard origin/master
+            npm install --production
+            pm2 startOrReload ecosystem.config.js --only echo-test
+            pm2 save

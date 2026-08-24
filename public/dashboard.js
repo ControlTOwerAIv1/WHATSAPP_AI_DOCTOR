@@ -2999,6 +2999,7 @@
           refreshBridgeLiveAddress();
         }
         else if (status === 'connecting' || status === 'qr_ready') updateStatus('connecting', 'Connecting...');
+        else if (status === 'missing_config') updateStatus('disconnected', 'Set Meta API Keys in .env');
         else updateStatus('disconnected', 'WA Disconnected');
         updateTopbarButtons();
       });

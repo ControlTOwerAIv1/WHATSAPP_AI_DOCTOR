@@ -1,0 +1,30 @@
+name: Deploy to Contabo Production Server
+
+on:
+  push:
+    branches:
+      - prod
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Contabo Production Server via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.CONTABO_HOST }}
+          username: ${{ secrets.CONTABO_USER }}
+          password: ${{ secrets.CONTABO_PASSWORD }}
+          port: 22
+          script: |
+            mkdir -p /var/www/wa-relay-prod
+            cd /var/www/wa-relay-prod
+            if [ ! -d ".git" ]; then
+              git init
+              git remote add origin https://github.com/ControlTOwerAIv1/whatsapp-relay.git
+            fi
+            git fetch origin prod
+            git reset --hard origin/prod
+            npm install --production
+            pm2 startOrReload ecosystem.config.js --only echo-prod
+            pm2 save

@@ -1,14 +1,15 @@
 /**
- * ECHO WhatsApp Bridge - Full Media Support
- * Supports: text, images, video, audio, documents, stickers, location
+ * ECHO WhatsApp Bridge — Meta Cloud API Version
+ * Supports: text, images, video, audio, documents, stickers, location, webhooks
  *
- * Install:
- *   npm install @whiskeysockets/baileys @hapi/boom express socket.io qrcode cors multer mime-types better-sqlite3
- *
- * Entrypoint only — wires together src/db.js (persistence), src/stores.js
- * (in-memory state + chat locking), src/whatsapp.js (Baileys connection),
- * and src/routes.js (REST + Socket.IO API), then starts listening.
+ * Entrypoint — wires together src/db.js (persistence), src/stores.js
+ * (in-memory state + chat locking), src/cloudapi.js (Meta Cloud API connection),
+ * src/ai-bot/ (AI chatbot), and src/routes.js (REST + Socket.IO API + Webhooks),
+ * then starts listening.
  */
+
+// Load .env before anything else so all modules see the env vars.
+require('dotenv').config();
 
 const path = require('path');
 
@@ -26,7 +27,7 @@ const fs = require('fs');
 
 const { RelayDatabase } = require('./src/db');
 const stores = require('./src/stores');
-const whatsapp = require('./src/whatsapp');
+const whatsapp = require('./src/cloudapi');
 const { registerRoutes } = require('./src/routes');
 
 const app = express();
@@ -107,12 +108,11 @@ process.on('unhandledRejection', (reason, promise) => {
 try {
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log('\n========================================');
-    console.log('   ECHO WhatsApp Bridge - Running');
+    console.log('   ECHO WhatsApp Bridge (Meta Cloud API)');
     console.log('========================================\n');
     console.log('Server started successfully!');
-    console.log(`\nAccess URL: http://localhost:${PORT}`);
-    console.log(`Network URL: http://<YOUR_PC_IP>:${PORT}`);
-    console.log(`\nWaiting for WhatsApp authentication...`);
+    console.log(`\nDashboard URL: http://localhost:${PORT}`);
+    console.log(`Webhook URL:   http://<YOUR_DOMAIN_OR_IP>:${PORT}/webhook`);
     console.log('========================================\n');
     whatsapp.connectToWhatsApp();
   });

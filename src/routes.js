@@ -146,6 +146,37 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     return `${protocol}://${getBridgeLiveAddress(req)}`;
   }
 
+  // ── Meta WhatsApp Cloud API Webhook Endpoints ─────────────────────────
+  app.get('/webhook', (req, res) => {
+    whatsapp.handleWebhookVerification(req, res);
+  });
+
+  app.post('/webhook', async (req, res) => {
+    res.sendStatus(200);
+    try {
+      if (typeof whatsapp.handleWebhookPayload === 'function') {
+        await whatsapp.handleWebhookPayload(req.body);
+      }
+    } catch (err) {
+      console.error('[Routes] Webhook processing error:', err.message);
+    }
+  });
+
+  app.get('/api/webhook', (req, res) => {
+    whatsapp.handleWebhookVerification(req, res);
+  });
+
+  app.post('/api/webhook', async (req, res) => {
+    res.sendStatus(200);
+    try {
+      if (typeof whatsapp.handleWebhookPayload === 'function') {
+        await whatsapp.handleWebhookPayload(req.body);
+      }
+    } catch (err) {
+      console.error('[Routes] Webhook processing error:', err.message);
+    }
+  });
+
   app.get('/api/status', (req, res) => {
     const { id: connectorOperatorId, name: connectorOperatorName } = stores.getConnectorOperator();
     const bridgeLiveAddress = getBridgeLiveAddress(req);
@@ -1017,148 +1048,34 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       }
     }
 
-    if (!msg.raw) {
-      return res.status(400).json({ error: 'Original message data not available in database' });
+    // If media file already exists locally, return it directly
+    if (msg.mediaUrl) {
+      const localFileName = path.basename(msg.mediaUrl);
+      const localFilePath = path.join(MEDIA_DIR, localFileName);
+      if (fs.existsSync(localFilePath)) {
+        return res.json({ success: true, mediaUrl: msg.mediaUrl, messageId: id });
+      }
     }
 
-    let refreshFailed = false;
-    try {
-      const { downloadMediaMessage } = require('@whiskeysockets/baileys');
-
-      // Helper to recursively restore Buffers from JSON serialization
-      const restoreBuffers = (obj) => {
-        if (!obj || typeof obj !== 'object') return obj;
-        if (obj.type === 'Buffer' && Array.isArray(obj.data)) {
-          return Buffer.from(obj.data);
-        }
-        for (const key in obj) {
-          if (Object.prototype.hasOwnProperty.call(obj, key)) {
-            obj[key] = restoreBuffers(obj[key]);
-          }
-        }
-        return obj;
-      };
-
-      // msg.raw only ever stores the message CONTENT (e.g. { imageMessage: ... }),
-      // not a full WAMessage - see the `raw:` assignments in whatsapp.js. Both
-      // sock.updateMediaMessage and downloadMediaMessage require the full
-      // { key, message } shape (they read message.key and message.message
-      // internally), so it has to be rebuilt here rather than passed as-is.
-      const restoredContent = restoreBuffers(JSON.parse(JSON.stringify(msg.raw)));
-      const restoredRaw = {
-        key: {
-          remoteJid: msg.jid || jid,
-          id: msg.id || id,
-          fromMe: Boolean(msg.fromMe),
-          participant: msg.participant || undefined,
-        },
-        message: restoredContent,
-        messageTimestamp: msg.timestamp,
-      };
-
-      const sock = whatsapp.getSock();
-
-      // Step 1: Refresh the media URL via WhatsApp servers.
-      // Old messages have expired CDN URLs (oe= timestamp). updateMediaMessage
-      // asks WA to issue a fresh download URL before we attempt to fetch it.
-      let rawToDownload = restoredRaw;
-      if (sock && typeof sock.updateMediaMessage === 'function') {
-        try {
-          console.log(`[Bridge] Refreshing expired media URL for message ${id}...`);
-          rawToDownload = await sock.updateMediaMessage(restoredRaw);
-          console.log(`[Bridge] Media URL refreshed successfully for ${id}`);
-        } catch (refreshErr) {
-          console.warn(`[Bridge] updateMediaMessage failed for ${id}, trying original URL:`, refreshErr.message);
-          rawToDownload = restoredRaw; // fall back to original
-          refreshFailed = true;
-        }
+    // Try downloading if downloadMedia helper exists (Cloud API)
+    if (typeof whatsapp.downloadMedia === 'function' && msg.raw?.mediaId) {
+      try {
+        const media = await whatsapp.downloadMedia(msg.raw.mediaId);
+        const ext = media.extension || mime.extension(msg.mimetype) || 'bin';
+        const localName = `${Date.now()}.${ext}`;
+        fs.writeFileSync(path.join(MEDIA_DIR, localName), media.buffer);
+        const mediaUrl = `/media/${localName}`;
+        msg.mediaUrl = mediaUrl;
+        stores.updateMessageInStore(msg);
+        database.upsertMessage(msg);
+        io.emit('message_media_updated', { jid, messageId: id, mediaUrl });
+        return res.json({ success: true, mediaUrl, messageId: id });
+      } catch (dlErr) {
+        return res.status(500).json({ error: `Failed to download media: ${dlErr.message}` });
       }
-
-      const buffer = await downloadMediaMessage(
-        rawToDownload,
-        'buffer',
-        { reuploadRequest: sock ? sock.updateMediaMessage : undefined }
-      );
-      
-      let ext = 'bin';
-      if (msg.mimetype) {
-        ext = mime.extension(msg.mimetype) || 'bin';
-      } else {
-        const mediaTypeToExt = {
-          image: 'jpg',
-          video: 'mp4',
-          audio: 'ogg',
-          voice: 'ogg',
-          sticker: 'webp',
-        };
-        ext = mediaTypeToExt[msg.mediaType] || 'bin';
-      }
-
-      let filename;
-      if (msg.mediaType === 'document') {
-        const safeName = (msg.fileName || 'document').replace(/[^a-zA-Z0-9._-]/g, '_');
-        filename = `${Date.now()}-${safeName}`;
-      } else {
-        filename = `${Date.now()}.${ext}`;
-      }
-
-      fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
-      const mediaUrl = `/media/${filename}`;
-
-      // Update message in DB
-      const row = database.db.prepare('SELECT payload FROM messages WHERE id = ?').get(id);
-      if (row) {
-        const dbPayload = JSON.parse(row.payload);
-        dbPayload.mediaUrl = mediaUrl;
-        database.upsertMessage(dbPayload);
-      }
-
-      // Update in stores.messageStore if it exists
-      const threadJids = stores.getThreadJids(jid);
-      for (const threadJid of threadJids) {
-        const msgs = stores.messageStore[threadJid];
-        if (msgs) {
-          const found = msgs.find((m) => m.id === id);
-          if (found) {
-            found.mediaUrl = mediaUrl;
-          }
-        }
-      }
-
-      // Broadcast update via Socket.IO
-      io.emit('message_media_updated', {
-        jid,
-        messageId: id,
-        mediaUrl,
-        fileName: msg.fileName,
-        content: msg.content,
-        mediaType: msg.mediaType,
-      });
-
-      res.json({
-        success: true,
-        mediaUrl,
-        fileName: msg.fileName,
-        content: msg.content,
-      });
-    } catch (e) {
-      const statusCode = e?.output?.statusCode || e?.data?.statusCode;
-      const isGone = statusCode === 410 || statusCode === 404 ||
-        (e.message && (e.message.includes('re-upload') || e.message.includes('re-upl')));
-
-      // If the URL refresh already failed AND the download also failed (any status),
-      // the media is unreachable on WA servers — treat as permanently gone.
-      if (isGone || refreshFailed) {
-        console.warn(`[Bridge] Media permanently unavailable for ${id} (${statusCode || refreshFailed ? 'refresh-failed' : 'gone'}): ${e.message}`);
-        return res.status(410).json({
-          error: 'Media is no longer available on WhatsApp servers.',
-          media_expired: true,
-        });
-      }
-
-      console.error(`[Bridge] On-demand media download failed for ${id}:`, e);
-      res.status(500).json({ error: `Failed to download media: ${e.message}` });
     }
+
+    return res.status(404).json({ error: 'Media file not found locally and cannot be redownloaded.' });
   });
 
   // WebSocket (operator dashboard <-> server)

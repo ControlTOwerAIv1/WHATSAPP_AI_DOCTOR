@@ -4,6 +4,8 @@
 relay.sqlite*
 /logs/
 .env
+credentials.json
+doctors.json
 *.log
 *.DS_Store
 npm-debug.log*

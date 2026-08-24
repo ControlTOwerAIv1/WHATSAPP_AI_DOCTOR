@@ -1,24 +1,24 @@
 # WhatsApp ECHO Bridge — Setup & Notes
 
 ## What This Is
-A self-hosted WhatsApp ECHO bridge using [Baileys](https://github.com/WhiskeySockets/Baileys) (unofficial WhatsApp Web API). It exposes a local HTTP/WebSocket server with a dashboard UI for multiple operators to send and receive WhatsApp messages in real-time.
+A multi-operator WhatsApp ECHO bridge powered by the official **Meta WhatsApp Cloud API**. It exposes an HTTP/WebSocket server with a real-time dashboard UI for multiple operators to collaborate, manage WhatsApp conversations, and run an automated Claude-powered AI assistant.
 
-## Key Features (v3.0)
-- **Multi-operator support** — dozens of browser clients can connect simultaneously and see each other's presence
-- **Real-time sync** — messages, edits, and deletions broadcast instantly to all connected operators
-- **Message edit & delete** — edit or delete sent messages using WhatsApp's native protocol
-- **Persistent message history** — per-chat message storage survives restarts, with pagination
+## Key Features
+- **Meta WhatsApp Cloud API** — official REST API + Webhooks integration (no QR scanning or phone emulation required)
+- **Multi-operator support** — multiple browser clients can connect simultaneously and see presence/locks
+- **Real-time sync** — messages and delivery receipts broadcast instantly to all connected operators
 - **Full media support** — images, video, audio, documents, stickers, location
-- **Operator registry** — live operator list visible in the dashboard
+- **AI Chatbot** — Anthropic Claude powered patient & doctor assistant integrated with Google Sheets
+- **Persistent SQLite storage** — chats, messages, and contact details survive restarts
 
 ## Stack
-- **bridge.js** — Node.js server (Express + Socket.io + Baileys)
+- **bridge.js** — Node.js server (Express + Socket.io + Meta Cloud API)
+- **src/cloudapi.js** — Official WhatsApp Business Platform Cloud API client
+- **src/ai-bot/** — Claude AI agents for patient & doctor automation
 - **dashboard.html** — Multi-operator dashboard UI (open directly in browser)
-- **auth_info/** — WhatsApp session credentials (auto-generated on first link)
-- **relay.sqlite** — Persisted chats, contacts, assignments, and messages (survives restarts)
+- **relay.sqlite** — Persisted chats, contacts, assignments, and messages
 - **media/** — Incoming/outgoing media files
-- **config.json** — Runtime configuration (message caps, save debounce)
-- **ecosystem.config.js** — PM2 process manager configuration
+- **.env** — Environment variables for Meta Cloud API, Claude API, and Google Sheets
 
 ## Running the Bridge
 The bridge is managed by PM2 (process manager).
