@@ -26,5 +26,5 @@ jobs:
             git fetch origin master
             git reset --hard origin/master
             npm install --production
-            pm2 startOrReload ecosystem.config.js --only echo-test
+            pm2 startOrReload ecosystem.config.js --only echo
             pm2 save

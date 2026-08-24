@@ -53,51 +53,6 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   }
 
   const notConnected = (res) => res.status(503).json({ error: 'Not connected to WhatsApp' });
-  const EDIT_WINDOW_SECONDS = Number(CONFIG.MESSAGE_EDIT_WINDOW_SECONDS) || (15 * 60);
-  const DELETE_FOR_EVERYONE_WINDOW_SECONDS = Number(CONFIG.MESSAGE_DELETE_FOR_EVERYONE_WINDOW_SECONDS) || (60 * 60 * 60);
-
-  function serializeActionError(result) {
-    return {
-      error: result.message,
-      code: result.code,
-      windowSeconds: result.windowSeconds,
-      remainingSeconds: result.remainingSeconds,
-    };
-  }
-
-  /**
-   * Build a minimal synthetic quoted message object that Baileys accepts.
-   * We don't store raw Baileys message objects, so we reconstruct from our
-   * normalized record. This is sufficient for WhatsApp to render the reply
-   * correctly with the quoted preview bubble on the recipient's device.
-   */
-  function buildQuotedContext(jid, quotedMessageId) {
-    if (!quotedMessageId) return null;
-    const msg = stores.findMessageInThread(jid, quotedMessageId);
-    if (!msg) return null;
-    // Determine participant for group messages (needed for Baileys key)
-    const participant = msg.participant || null;
-    const remoteJid = msg.from || msg.jid || jid;
-    // Build the inner `message` payload: prefer conversation for text,
-    // fall back to extendedTextMessage for captions/other.
-    let innerMessage;
-    if (!msg.mediaType || msg.mediaType === 'text') {
-      innerMessage = { conversation: msg.content || '' };
-    } else {
-      // For media, wrap as extendedTextMessage so Baileys renders it
-      innerMessage = { extendedTextMessage: { text: msg.content || '' } };
-    }
-    return {
-      key: {
-        remoteJid,
-        fromMe: Boolean(msg.fromMe),
-        id: msg.id,
-        ...(participant ? { participant } : {}),
-      },
-      message: innerMessage,
-      messageTimestamp: msg.timestamp || Math.floor(Date.now() / 1000),
-    };
-  }
 
   function getFirstLanIpv4() {
     const nets = os.networkInterfaces();
@@ -182,15 +137,10 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     const bridgeLiveAddress = getBridgeLiveAddress(req);
     res.json({
       status: whatsapp.getStatus(),
-      qr: whatsapp.getQrCodeData(),
       connectorOperatorId,
       connectorOperatorName,
       bridgeLiveAddress,
       bridgeLiveUrl: getBridgeLiveUrl(req),
-      messageRules: {
-        editWindowSeconds: EDIT_WINDOW_SECONDS,
-        deleteForEveryoneWindowSeconds: DELETE_FOR_EVERYONE_WINDOW_SECONDS,
-      },
     });
   });
 
@@ -287,6 +237,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       res.status(500).json({ error: e.message });
     }
   });
+
   app.post('/api/contacts/import', upload.single('file'), async (req, res) => {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -299,7 +250,6 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       let imported = 0;
       let skipped = 0;
 
-      // Build index maps of all existing contacts in memory by their full phone number and last 10 digits
       const existingByFullPhone = new Map();
       const existingByLast10 = new Map();
 
@@ -318,7 +268,6 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       }
 
       for (const c of parsedContacts) {
-        // Find all matching existing JIDs using full number or last 10 digits
         const matchedJidsSet = new Set();
         const fullMatches = existingByFullPhone.get(c.phone);
         if (fullMatches) {
@@ -358,13 +307,11 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
             skipped++;
           }
         } else {
-          // Create new contact if not found
           const jid = `${c.phone}@s.whatsapp.net`;
           const contactObj = { id: jid, name: c.name, notify: c.name };
           stores.contactStore[jid] = contactObj;
           database.upsertContact(contactObj);
 
-          // Add to our local index maps to prevent duplicate insertions
           if (!existingByFullPhone.has(c.phone)) existingByFullPhone.set(c.phone, []);
           existingByFullPhone.get(c.phone).push(jid);
 
@@ -391,6 +338,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       res.status(500).json({ error: err.message });
     }
   });
+
   app.get('/api/messages', async (req, res) => {
     const { jid, limit = 50, before } = req.query;
     if (!jid) {
@@ -400,25 +348,20 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       return res.json(allMsgs.slice(-Number(limit)));
     }
 
-    // Hydrate from DB if cold before returning combined list
-    const altJid = jid.endsWith('@lid') ? stores.lidToJid[jid] : stores.jidToLid[jid];
-    const hydrate = (targetJid) => {
-      if (!stores.messageStore[targetJid] || stores.messageStore[targetJid].length === 0) {
-        try {
-          const dbMsgsStmt = database.db.prepare(
-            'SELECT payload FROM messages WHERE jid = ? ORDER BY timestamp ASC, id ASC LIMIT ?'
-          );
-          const rows = dbMsgsStmt.all(targetJid, CONFIG.MAX_MESSAGES_PER_CHAT);
-          if (rows.length > 0) {
-            stores.messageStore[targetJid] = rows.map((row) => stores.normalizeMessageRecord(JSON.parse(row.payload)));
-          }
-        } catch (dbErr) {
-          console.warn(`[Bridge] API messages DB hydration error for ${targetJid}:`, dbErr.message);
+    // Hydrate from DB if cold before returning list
+    if (!stores.messageStore[jid] || stores.messageStore[jid].length === 0) {
+      try {
+        const dbMsgsStmt = database.db.prepare(
+          'SELECT payload FROM messages WHERE jid = ? ORDER BY timestamp ASC, id ASC LIMIT ?'
+        );
+        const rows = dbMsgsStmt.all(jid, CONFIG.MAX_MESSAGES_PER_CHAT);
+        if (rows.length > 0) {
+          stores.messageStore[jid] = rows.map((row) => stores.normalizeMessageRecord(JSON.parse(row.payload)));
         }
+      } catch (dbErr) {
+        console.warn(`[Bridge] API messages DB hydration error for ${jid}:`, dbErr.message);
       }
-    };
-    hydrate(jid);
-    if (altJid) hydrate(altJid);
+    }
 
     const filterToBefore = (list) => {
       if (!before) return list;
@@ -426,82 +369,10 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       return list.filter((msg) => stores.toTimestamp(msg.timestamp) < beforeTs);
     };
 
-    let msgs = filterToBefore(stores.getMessagesForJid(jid));
-
-    // Local store had nothing older than the requested cursor — ask WhatsApp
-    // itself for more history (on-demand sync) before giving up, since the
-    // local cache only ever holds what's already been synced/received.
-    if (before && msgs.length === 0) {
-      try {
-        const result = await whatsapp.requestOlderHistory(jid, Number(limit));
-        if (result.ok && result.added > 0) {
-          msgs = filterToBefore(stores.getMessagesForJid(jid));
-        }
-      } catch (e) {
-        console.warn(`[Bridge] On-demand history fetch failed for ${jid}:`, e.message);
-      }
-    }
-
+    const msgs = filterToBefore(stores.getMessagesForJid(jid));
     const total = msgs.length;
     const sliced = msgs.slice(-Number(limit));
     res.json({ messages: sliced, hasMore: total > sliced.length, total, chat: stores.normalizeChat(stores.chatStore[jid]) || null });
-  });
-
-  // Message info: per-participant delivery/read receipts for a sent group
-  // message, with display names resolved server-side. Participants without a
-  // receipt yet come back with null timestamps ("pending").
-  app.get('/api/messages/:jid/:messageId/receipts', (req, res) => {
-    const { jid, messageId } = req.params;
-    const normalizeJid = (j) => {
-      if (!j) return null;
-      const [user, host] = j.split('@');
-      return host ? `${user.split(':')[0]}@${host}` : j;
-    };
-    const toKey = (j) => {
-      if (!j) return null;
-      if (j.endsWith('@lid')) return stores.lidToJid[j] || j;
-      return normalizeJid(j);
-    };
-
-    const threadJids = stores.getThreadJids(jid);
-    let msg = null;
-    for (const t of threadJids) {
-      const found = stores.messageStore[t]?.find(m => m.id === messageId);
-      if (found) { msg = found; break; }
-    }
-    if (!msg) return res.status(404).json({ error: 'Message not found' });
-
-    const receipts = msg.userReceipts || {};
-    const isGroup = jid.endsWith('@g.us');
-    const sock = whatsapp.getSock();
-    const self = new Set();
-    if (sock?.user?.id) self.add(normalizeJid(sock.user.id));
-    if (sock?.user?.lid) self.add(normalizeJid(sock.user.lid));
-
-    const participants = [];
-    if (isGroup && Array.isArray(stores.groupStore[jid]?.participants)) {
-      for (const p of stores.groupStore[jid].participants) {
-        const pid = toKey(typeof p === 'string' ? p : p?.id);
-        if (!pid || self.has(pid)) continue;
-        const r = receipts[pid] || {};
-        participants.push({
-          id: pid,
-          name: stores.resolveContactName(pid) || stores.cleanJidToPhone(pid) || pid,
-          deliveredAt: r.deliveredAt || null,
-          readAt: r.readAt || null,
-          playedAt: r.playedAt || null,
-        });
-      }
-    }
-
-    res.json({
-      messageId,
-      jid,
-      isGroup,
-      status: msg.status ?? null,
-      timestamp: stores.toTimestamp(msg.timestamp),
-      participants,
-    });
   });
 
   app.get('/api/messages/search', async (req, res) => {
@@ -511,13 +382,9 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
         return res.status(400).json({ error: 'jid and query q are required' });
       }
 
-      const altJid = jid.endsWith('@lid') ? stores.lidToJid[jid] : stores.jidToLid[jid];
-      const threadJids = altJid ? [jid, altJid] : [jid];
-      const placeholders = threadJids.map(() => '?').join(',');
-
       const sql = `
         SELECT payload FROM messages
-        WHERE jid IN (${placeholders})
+        WHERE jid = ?
           AND (
             json_extract(payload, '$.content') LIKE ?
             OR json_extract(payload, '$.fileName') LIKE ?
@@ -528,7 +395,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       `;
       
       const searchPattern = `%${q}%`;
-      const queryParams = [...threadJids, searchPattern, searchPattern, searchPattern, searchPattern];
+      const queryParams = [jid, searchPattern, searchPattern, searchPattern, searchPattern];
       
       const stmt = database.db.prepare(sql);
       const rows = stmt.all(...queryParams);
@@ -558,18 +425,16 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   app.post('/api/send', async (req, res) => {
     const sock = whatsapp.getSock();
     if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
-    if (req.body.jid) req.body.jid = stores.getPreferredJid(req.body.jid);
+    const jid = req.body.jid;
     const operator = getOperatorFromRequest(req);
-    const lock = stores.ensureChatLockForOperator(req.body.jid, operator);
+    const lock = stores.ensureChatLockForOperator(jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
     try {
-      const quotedCtx = buildQuotedContext(req.body.jid, req.body.quotedMessageId);
-      const options = quotedCtx ? { quoted: quotedCtx } : {};
-      const result = await sock.sendMessage(req.body.jid, { text: req.body.text }, options);
-      // Look up quoted message metadata for storage
-      const quotedMsg = req.body.quotedMessageId ? stores.findMessageInThread(req.body.jid, req.body.quotedMessageId) : null;
+      const options = req.body.quotedMessageId ? { quotedMessageId: req.body.quotedMessageId } : {};
+      const result = await sock.sendMessage(jid, { text: req.body.text }, options);
+      const quotedMsg = req.body.quotedMessageId ? stores.findMessageInThread(jid, req.body.quotedMessageId) : null;
       const message = await stores.recordOutboundMessage({
-        jid: req.body.jid,
+        jid,
         operator,
         result,
         message: {
@@ -591,18 +456,18 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   app.post('/api/send/image', upload.single('file'), async (req, res) => {
     const sock = whatsapp.getSock();
     if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
-    if (req.body.jid) req.body.jid = stores.getPreferredJid(req.body.jid);
+    const jid = req.body.jid;
     const operator = getOperatorFromRequest(req);
-    const lock = stores.ensureChatLockForOperator(req.body.jid, operator);
+    const lock = stores.ensureChatLockForOperator(jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
     try {
-      const result = await sock.sendMessage(req.body.jid, {
+      const result = await sock.sendMessage(jid, {
         image: fs.readFileSync(req.file.path),
         caption: req.body.caption || '',
         mimetype: req.file.mimetype,
       });
       const message = await stores.recordOutboundMessage({
-        jid: req.body.jid,
+        jid,
         operator,
         result,
         message: {
@@ -623,18 +488,18 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   app.post('/api/send/video', upload.single('file'), async (req, res) => {
     const sock = whatsapp.getSock();
     if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
-    if (req.body.jid) req.body.jid = stores.getPreferredJid(req.body.jid);
+    const jid = req.body.jid;
     const operator = getOperatorFromRequest(req);
-    const lock = stores.ensureChatLockForOperator(req.body.jid, operator);
+    const lock = stores.ensureChatLockForOperator(jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
     try {
-      const result = await sock.sendMessage(req.body.jid, {
+      const result = await sock.sendMessage(jid, {
         video: fs.readFileSync(req.file.path),
         caption: req.body.caption || '',
         mimetype: req.file.mimetype,
       });
       const message = await stores.recordOutboundMessage({
-        jid: req.body.jid,
+        jid,
         operator,
         result,
         message: {
@@ -655,19 +520,19 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   app.post('/api/send/audio', upload.single('file'), async (req, res) => {
     const sock = whatsapp.getSock();
     if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
-    if (req.body.jid) req.body.jid = stores.getPreferredJid(req.body.jid);
+    const jid = req.body.jid;
     const operator = getOperatorFromRequest(req);
-    const lock = stores.ensureChatLockForOperator(req.body.jid, operator);
+    const lock = stores.ensureChatLockForOperator(jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
     try {
       const ptt = req.body.ptt === 'true';
-      const result = await sock.sendMessage(req.body.jid, {
+      const result = await sock.sendMessage(jid, {
         audio: fs.readFileSync(req.file.path),
         mimetype: req.file.mimetype || 'audio/ogg; codecs=opus',
         ptt,
       });
       const message = await stores.recordOutboundMessage({
-        jid: req.body.jid,
+        jid,
         operator,
         result,
         message: {
@@ -688,19 +553,19 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   app.post('/api/send/document', upload.single('file'), async (req, res) => {
     const sock = whatsapp.getSock();
     if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
-    if (req.body.jid) req.body.jid = stores.getPreferredJid(req.body.jid);
+    const jid = req.body.jid;
     const operator = getOperatorFromRequest(req);
-    const lock = stores.ensureChatLockForOperator(req.body.jid, operator);
+    const lock = stores.ensureChatLockForOperator(jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
     try {
       const fileName = req.body.filename || req.file.originalname;
-      const result = await sock.sendMessage(req.body.jid, {
+      const result = await sock.sendMessage(jid, {
         document: fs.readFileSync(req.file.path),
         fileName,
         mimetype: req.file.mimetype,
       });
       const message = await stores.recordOutboundMessage({
-        jid: req.body.jid,
+        jid,
         operator,
         result,
         message: {
@@ -721,14 +586,14 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   app.post('/api/send/location', async (req, res) => {
     const sock = whatsapp.getSock();
     if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
-    if (req.body.jid) req.body.jid = stores.getPreferredJid(req.body.jid);
+    const jid = req.body.jid;
     const operator = getOperatorFromRequest(req);
-    const lock = stores.ensureChatLockForOperator(req.body.jid, operator);
+    const lock = stores.ensureChatLockForOperator(jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
     try {
       const latitude = parseFloat(req.body.latitude);
       const longitude = parseFloat(req.body.longitude);
-      const result = await sock.sendMessage(req.body.jid, {
+      const result = await sock.sendMessage(jid, {
         location: {
           degreesLatitude: latitude,
           degreesLongitude: longitude,
@@ -736,7 +601,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
         },
       });
       const message = await stores.recordOutboundMessage({
-        jid: req.body.jid,
+        jid,
         operator,
         result,
         message: {
@@ -747,266 +612,6 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
         },
       });
       res.json({ success: true, message });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.put('/api/messages/:messageId', async (req, res) => {
-    const sock = whatsapp.getSock();
-    if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
-    const operator = getOperatorFromRequest(req);
-    const { messageId } = req.params;
-    let { jid, newContent } = req.body;
-    if (!jid || !newContent) return res.status(400).json({ error: 'jid and newContent required' });
-    jid = stores.getPreferredJid(jid);
-    const lock = stores.ensureChatLockForOperator(jid, operator);
-    if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
-
-    const eligibility = stores.canEditMessage(jid, messageId, { windowSeconds: EDIT_WINDOW_SECONDS });
-    if (!eligibility.ok) return res.status(eligibility.status).json(serializeActionError(eligibility));
-
-    try {
-      const result = await sock.sendMessage(jid, { edit: { id: messageId, remoteJid: jid, fromMe: true }, text: newContent });
-      const editMsgId = result?.key?.id;
-      const altJid = jid.endsWith('@lid') ? stores.lidToJid[jid] : stores.jidToLid[jid];
-      const targetJids = altJid ? [jid, altJid] : [jid];
-      let updatedEdits = [];
-      const editTimestamp = Date.now();
-      for (const tJid of targetJids) {
-        const msgs = stores.messageStore[tJid];
-        if (msgs) {
-          const found = msgs.find((msg) => msg.id === messageId);
-          if (found) {
-            found.content = newContent;
-            found.editedAt = editTimestamp;
-            if (editMsgId) {
-              found.latestEditMsgId = editMsgId;
-            }
-            if (found.fromMe) {
-              found.status = 2; // Reset status back to sent (SERVER_ACK) when edited
-            }
-            if (!found.edits) found.edits = [];
-            const exists = found.edits.some((e) => e.editedAt === editTimestamp);
-            if (!exists) {
-              found.edits.push({
-                operatorId: operator?.id || 'unknown',
-                operatorName: operator?.name || 'Unknown',
-                editedAt: editTimestamp,
-                editMsgId: editMsgId || null,
-              });
-            }
-            updatedEdits = found.edits;
-            database.upsertMessage(found);
-          }
-        }
-      }
-      io.emit('message_edited', { jid, messageId, newContent, editedAt: editTimestamp, edits: updatedEdits });
-      for (const tJid of targetJids) {
-        io.emit('message_status_update', { jid: tJid, messageId, status: 2, fromMe: true });
-      }
-      stores.saveStore();
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.delete('/api/messages/:messageId', async (req, res) => {
-    const sock = whatsapp.getSock();
-    if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
-    const operator = getOperatorFromRequest(req);
-    const { messageId } = req.params;
-    let jid = req.query.jid || req.body.jid;
-    if (!jid) return res.status(400).json({ error: 'jid required' });
-    jid = stores.getPreferredJid(jid);
-    const lock = stores.ensureChatLockForOperator(jid, operator);
-    if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
-
-    const eligibility = stores.canDeleteForEveryone(jid, messageId, { windowSeconds: DELETE_FOR_EVERYONE_WINDOW_SECONDS });
-    if (!eligibility.ok) return res.status(eligibility.status).json(serializeActionError(eligibility));
-
-    try {
-      await sock.sendMessage(jid, { delete: { id: messageId, remoteJid: jid, fromMe: true } });
-      const msgs = stores.messageStore[jid];
-      if (msgs) {
-        const found = msgs.find((msg) => msg.id === messageId);
-        if (found) {
-          found.deleted = true;
-          found.content = '';
-          database.upsertMessage(found);
-        }
-      }
-      io.emit('message_deleted', { jid, messageId });
-      stores.saveStore();
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post('/api/groups/create', async (req, res) => {
-    const sock = whatsapp.getSock();
-    if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
-
-    const name = String(req.body.name || '').trim();
-    const rawParticipants = Array.isArray(req.body.participants) ? req.body.participants : [];
-    if (!name) return res.status(400).json({ error: 'Group name is required' });
-    if (!rawParticipants.length) return res.status(400).json({ error: 'At least one participant is required' });
-
-    // Accept "+91 98765 43210", "919876543210" or full jids; dedupe by digits.
-    const skipped = [];
-    const seen = new Set();
-    const numbers = [];
-    for (const raw of rawParticipants) {
-      if (typeof raw !== 'string' || !raw.trim()) continue;
-      let value = raw.trim();
-      if (value.includes('@')) value = value.split('@')[0].split(':')[0];
-      const digits = value.replace(/\D/g, '');
-      if (digits.length < 7 || digits.length > 15) {
-        skipped.push({ input: raw, reason: 'Invalid phone number' });
-        continue;
-      }
-      if (!seen.has(digits)) {
-        seen.add(digits);
-        numbers.push({ input: raw, digits });
-      }
-    }
-    if (!numbers.length) {
-      return res.status(400).json({ error: 'No valid phone numbers provided', skipped });
-    }
-
-    try {
-      // Verify each number is on WhatsApp before creating, and use the exact
-      // jid WhatsApp returns (it can differ from the typed number, e.g.
-      // Brazilian numbers with/without the extra 9). One-at-a-time keeps the
-      // input-to-result mapping unambiguous; group creation is a rare,
-      // small-batch operation so the extra round-trips don't matter.
-      const participants = [];
-      for (const n of numbers) {
-        let entry = null;
-        try {
-          const results = await sock.onWhatsApp(n.digits);
-          entry = Array.isArray(results) ? results[0] : null;
-        } catch (lookupErr) {
-          console.warn(`[Bridge] onWhatsApp lookup failed for ${n.digits}:`, lookupErr.message);
-        }
-        if (entry && entry.exists && entry.jid) {
-          participants.push(entry.jid);
-        } else {
-          skipped.push({ input: n.input, reason: 'Not on WhatsApp' });
-        }
-      }
-      if (!participants.length) {
-        return res.status(400).json({ error: 'None of the numbers are on WhatsApp', skipped });
-      }
-
-      const result = await sock.groupCreate(name, participants);
-      stores.groupStore[result.id] = result;
-      io.emit('group_created', result);
-      res.json({ ...result, added: participants.length, skipped });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.get('/api/groups/:jid', async (req, res) => {
-    const sock = whatsapp.getSock();
-    if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
-    const { jid } = req.params;
-    try {
-      let group = stores.groupStore[jid];
-      if (!group) {
-        group = await sock.groupMetadata(jid);
-        stores.groupStore[jid] = group;
-      }
-      if (group && group.participants) {
-        const resolvedParticipants = await Promise.all(
-          group.participants.map(async (p) => {
-            let resolvedId = p.id;
-            if (p.id && p.id.endsWith('@lid')) {
-              let phoneJid = stores.lidToJid[p.id];
-              if (!phoneJid) {
-                phoneJid = await stores.resolveLidToPhoneAsync(p.id);
-              }
-              if (phoneJid) {
-                resolvedId = phoneJid;
-              }
-            }
-            return {
-              ...p,
-              id: resolvedId
-            };
-          })
-        );
-        group = {
-          ...group,
-          participants: resolvedParticipants
-        };
-      }
-      res.json(group);
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post('/api/groups/:jid/participants', async (req, res) => {
-    const sock = whatsapp.getSock();
-    if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
-    const { jid } = req.params;
-    const { action, participants } = req.body;
-    if (!action || !participants || !Array.isArray(participants)) {
-      return res.status(400).json({ error: 'Missing action or participants array' });
-    }
-    try {
-      const response = await sock.groupParticipantsUpdate(jid, participants, action);
-      const meta = await sock.groupMetadata(jid);
-      stores.groupStore[jid] = meta;
-      if (stores.chatStore[jid]) {
-        stores.chatStore[jid].name = meta.subject;
-        database.upsertChat(stores.chatStore[jid]);
-      }
-      io.emit('groups', Object.values(stores.groupStore));
-      stores.broadcastChats();
-      res.json({ success: true, response });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post('/api/groups/:jid/update', async (req, res) => {
-    const sock = whatsapp.getSock();
-    if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
-    const { jid } = req.params;
-    const { subject } = req.body;
-    try {
-      if (subject) {
-        await sock.groupUpdateSubject(jid, subject);
-      }
-      const meta = await sock.groupMetadata(jid);
-      stores.groupStore[jid] = meta;
-      if (stores.chatStore[jid]) {
-        stores.chatStore[jid].name = meta.subject;
-        database.upsertChat(stores.chatStore[jid]);
-      }
-      io.emit('groups', Object.values(stores.groupStore));
-      stores.broadcastChats();
-      res.json({ success: true, meta });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post('/api/groups/:jid/leave', async (req, res) => {
-    const sock = whatsapp.getSock();
-    if (!sock || whatsapp.getStatus() !== 'connected') return notConnected(res);
-    const { jid } = req.params;
-    try {
-      await sock.groupLeave(jid);
-      delete stores.groupStore[jid];
-      io.emit('groups', Object.values(stores.groupStore));
-      stores.broadcastChats();
-      res.json({ success: true });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
@@ -1038,9 +643,6 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       });
     }
 
-    // The in-memory copy has raw stripped (see stores.addMessageToStore) to
-    // keep the resident message cache small — fetch it from the database,
-    // which still holds the full payload, when we actually need it.
     if (!msg.raw) {
       const row = database.db.prepare('SELECT payload FROM messages WHERE id = ?').get(id);
       if (row) {
@@ -1048,7 +650,6 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       }
     }
 
-    // If media file already exists locally, return it directly
     if (msg.mediaUrl) {
       const localFileName = path.basename(msg.mediaUrl);
       const localFilePath = path.join(MEDIA_DIR, localFileName);
@@ -1057,7 +658,6 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       }
     }
 
-    // Try downloading if downloadMedia helper exists (Cloud API)
     if (typeof whatsapp.downloadMedia === 'function' && msg.raw?.mediaId) {
       try {
         const media = await whatsapp.downloadMedia(msg.raw.mediaId);
@@ -1099,7 +699,6 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     const { id: connectorOperatorId, name: connectorOperatorName } = stores.getConnectorOperator();
     const sock = whatsapp.getSock();
     socket.emit('status', { status: whatsapp.getStatus(), connectorOperatorId, connectorOperatorName, myJid: sock?.user?.id || null });
-    if (whatsapp.getQrCodeData()) socket.emit('qr', whatsapp.getQrCodeData());
     socket.emit('groups', Object.values(stores.groupStore));
     socket.emit('chats', stores.sortedChats(opId));
     socket.emit('flagged_list', stores.getFlaggedMessages());
@@ -1114,11 +713,6 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       }
       broadcastOperators();
       socket.emit('chats', stores.sortedChats(op ? op.id : opId));
-    });
-
-    socket.on('linking_whatsapp', ({ operatorId, operatorName }) => {
-      stores.setLinkingOperator({ id: operatorId, name: operatorName });
-      console.log(`[Bridge] Operator ${operatorName || operatorId} is scanning/linking WhatsApp`);
     });
 
     socket.on('claim_chat', ({ jid }) => {
@@ -1136,72 +730,40 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     });
 
     socket.on('open_chat', ({ jid }) => {
-      console.log(`[Bridge] open_chat event received for JID: ${jid}`);
       socket.activeJid = jid;
       whatsapp.markChatAsRead(jid);
-
-      // Reset unread count for the chat (including its alternate LID/phone JID)
-      const preferredJid = stores.getPreferredJid(jid) || jid;
-      const targetJids = [preferredJid];
-      const mappedAltJid = preferredJid.endsWith('@lid') ? stores.lidToJid[preferredJid] : stores.jidToLid[preferredJid];
-      if (mappedAltJid) targetJids.push(mappedAltJid);
 
       // Update operator's read pointer to latest message in this thread
       const latestMsg = stores.getMessagesForJid(jid).slice(-1)[0];
       const latestTimestamp = latestMsg ? stores.toTimestamp(latestMsg.timestamp) : Math.floor(Date.now() / 1000);
       const latestId = latestMsg ? latestMsg.id : null;
       
-      for (const tJid of targetJids) {
-        stores.setOperatorReadPointer(opId, tJid, latestId, latestTimestamp);
-      }
+      stores.setOperatorReadPointer(opId, jid, latestId, latestTimestamp);
 
-      let chatUpdated = false;
-      for (const tJid of targetJids) {
-        const chat = stores.chatStore[tJid];
-        if (chat && chat.unreadCount > 0) {
-          chat.unreadCount = 0;
-          database.upsertChat(chat);
-          chatUpdated = true;
-        }
-      }
-      if (chatUpdated) {
+      const chat = stores.chatStore[jid];
+      if (chat && chat.unreadCount > 0) {
+        chat.unreadCount = 0;
+        database.upsertChat(chat);
         stores.broadcastChats();
         stores.saveStore();
       } else {
         stores.broadcastChats();
       }
 
-      if (jid.endsWith('@lid') && !stores.lidToJid[jid]) {
-        stores.resolveLidToPhoneAsync(jid).then((pn) => {
-          if (pn) {
-            stores.broadcastChats();
+      // If in-memory store is cold, hydrate from SQLite
+      if (!stores.messageStore[jid] || stores.messageStore[jid].length === 0) {
+        try {
+          const dbMsgsStmt = database.db.prepare(
+            'SELECT payload FROM messages WHERE jid = ? ORDER BY timestamp ASC, id ASC LIMIT ?'
+          );
+          const rows = dbMsgsStmt.all(jid, CONFIG.MAX_MESSAGES_PER_CHAT);
+          if (rows.length > 0) {
+            stores.messageStore[jid] = rows.map((row) => stores.normalizeMessageRecord(JSON.parse(row.payload)));
           }
-        });
-      }
-
-      // If in-memory store is cold (e.g. after a server restart) but SQLite has
-      // persisted messages, hydrate the in-memory store from the DB now so the
-      // operator sees chat history immediately on click.
-      const altJid = jid.endsWith('@lid') ? stores.lidToJid[jid] : stores.jidToLid[jid];
-
-      const hydrate = (targetJid) => {
-        if (!stores.messageStore[targetJid] || stores.messageStore[targetJid].length === 0) {
-          try {
-            const dbMsgsStmt = database.db.prepare(
-              'SELECT payload FROM messages WHERE jid = ? ORDER BY timestamp ASC, id ASC LIMIT ?'
-            );
-            const rows = dbMsgsStmt.all(targetJid, CONFIG.MAX_MESSAGES_PER_CHAT);
-            if (rows.length > 0) {
-              stores.messageStore[targetJid] = rows.map((row) => stores.normalizeMessageRecord(JSON.parse(row.payload)));
-            }
-          } catch (dbErr) {
-            console.warn(`[Bridge] open_chat DB hydration error for ${targetJid}:`, dbErr.message);
-          }
+        } catch (dbErr) {
+          console.warn(`[Bridge] open_chat DB hydration error for ${jid}:`, dbErr.message);
         }
-      };
-
-      hydrate(jid);
-      if (altJid) hydrate(altJid);
+      }
 
       const msgs = stores.getMessagesForJid(jid);
       const limit = 50;
@@ -1216,67 +778,22 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     });
 
     socket.on('set_read_pointer', ({ jid, messageId, timestamp }) => {
-      const preferredJid = stores.getPreferredJid(jid) || jid;
-      const targetJids = [preferredJid];
-      const mappedAltJid = preferredJid.endsWith('@lid') ? stores.lidToJid[preferredJid] : stores.jidToLid[preferredJid];
-      if (mappedAltJid) targetJids.push(mappedAltJid);
-
-      for (const tJid of targetJids) {
-        stores.setOperatorReadPointer(opId, tJid, messageId, timestamp);
-      }
+      stores.setOperatorReadPointer(opId, jid, messageId, timestamp);
       stores.broadcastChats();
     });
 
-    socket.on('mark_chat_unread', ({ jid, scope }) => {
-      // Seen-status is currently global across operators (see
-      // stores.getUnreadCountForOperator): any operator's read pointer clears
-      // the badge for everyone, so partial scopes ('me'/'others') can't take
-      // effect - a remaining pointer from any other operator would keep the
-      // chat read. Force the global scope until per-operator seen is revived.
-      scope = 'all';
-      const preferredJid = stores.getPreferredJid(jid) || jid;
-      const targetJids = [preferredJid];
-      const mappedAltJid = preferredJid.endsWith('@lid') ? stores.lidToJid[preferredJid] : stores.jidToLid[preferredJid];
-      if (mappedAltJid) targetJids.push(mappedAltJid);
-
-      if (scope === 'others' || scope === 'all') {
-        for (const tJid of targetJids) {
-          if (scope === 'others') {
-            database.db.prepare('DELETE FROM operator_chat_reads WHERE chat_id = ? AND operator_id != ?').run(tJid, opId);
-            for (const otherOpId of Object.keys(stores.operatorReads || {})) {
-              if (otherOpId !== opId && stores.operatorReads[otherOpId]) {
-                delete stores.operatorReads[otherOpId][tJid];
-              }
-            }
-          } else {
-            database.db.prepare('DELETE FROM operator_chat_reads WHERE chat_id = ?').run(tJid);
-            for (const otherOpId of Object.keys(stores.operatorReads || {})) {
-              if (stores.operatorReads[otherOpId]) {
-                delete stores.operatorReads[otherOpId][tJid];
-              }
-            }
-          }
-          
-          const chat = stores.chatStore[tJid];
-          if (chat) {
-            chat.unreadCount = 1;
-            database.upsertChat(chat);
-          }
-        }
-      } else if (scope === 'me') {
-        for (const tJid of targetJids) {
-          database.db.prepare('DELETE FROM operator_chat_reads WHERE chat_id = ? AND operator_id = ?').run(tJid, opId);
-          if (stores.operatorReads[opId]) {
-            delete stores.operatorReads[opId][tJid];
-          }
-          const chat = stores.chatStore[tJid];
-          if (chat) {
-            chat.unreadCount = 1;
-            database.upsertChat(chat);
-          }
+    socket.on('mark_chat_unread', ({ jid }) => {
+      database.db.prepare('DELETE FROM operator_chat_reads WHERE chat_id = ?').run(jid);
+      for (const otherOpId of Object.keys(stores.operatorReads || {})) {
+        if (stores.operatorReads[otherOpId]) {
+          delete stores.operatorReads[otherOpId][jid];
         }
       }
-      
+      const chat = stores.chatStore[jid];
+      if (chat) {
+        chat.unreadCount = 1;
+        database.upsertChat(chat);
+      }
       stores.broadcastChats();
       stores.saveStore();
     });
@@ -1323,16 +840,13 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     socket.on('send_message', async (data) => {
       const sock = whatsapp.getSock();
       if (!sock || whatsapp.getStatus() !== 'connected') return;
-      let { jid, text, clientTempId, quotedMessageId } = data;
-      if (jid) jid = stores.getPreferredJid(jid);
+      const { jid, text, clientTempId, quotedMessageId } = data;
       const operator = getOperatorFromSocket(socket);
       const lock = stores.ensureChatLockForOperator(jid, operator);
       if (!lock.ok) return stores.sendLockError(socket, lock);
       try {
-        const quotedCtx = buildQuotedContext(jid, quotedMessageId);
-        const options = quotedCtx ? { quoted: quotedCtx } : {};
+        const options = quotedMessageId ? { quotedMessageId } : {};
         const result = await sock.sendMessage(jid, { text }, options);
-        // Look up quoted message metadata for storage
         const quotedMsg = quotedMessageId ? stores.findMessageInThread(jid, quotedMessageId) : null;
         const sentMsg = await stores.recordOutboundMessage({
           jid,
@@ -1351,115 +865,6 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
         socket.emit('message_ack', { clientTempId, serverId: sentMsg.id, timestamp: sentMsg.timestamp });
       } catch (e) {
         socket.emit('message_failed', { clientTempId, jid, error: e.message });
-        socket.emit('error', { message: e.message });
-      }
-    });
-
-    socket.on('edit_message', async (data) => {
-      const sock = whatsapp.getSock();
-      if (!sock || whatsapp.getStatus() !== 'connected') return;
-      let { jid, messageId, newContent } = data;
-      if (jid) jid = stores.getPreferredJid(jid);
-      const operator = getOperatorFromSocket(socket);
-      const lock = stores.ensureChatLockForOperator(jid, operator);
-      if (!lock.ok) return stores.sendLockError(socket, lock);
-
-      const eligibility = stores.canEditMessage(jid, messageId, { windowSeconds: EDIT_WINDOW_SECONDS });
-      if (!eligibility.ok) {
-        return socket.emit('error', {
-          message: eligibility.message,
-          jid,
-          code: eligibility.code,
-          windowSeconds: eligibility.windowSeconds,
-          remainingSeconds: eligibility.remainingSeconds,
-        });
-      }
-
-      try {
-        const result = await sock.sendMessage(jid, { edit: { id: messageId, remoteJid: jid, fromMe: true }, text: newContent });
-        const editMsgId = result?.key?.id;
-        const altJid = jid.endsWith('@lid') ? stores.lidToJid[jid] : stores.jidToLid[jid];
-        const targetJids = altJid ? [jid, altJid] : [jid];
-        let updatedEdits = [];
-        const editTimestamp = Date.now();
-        for (const tJid of targetJids) {
-          const msgs = stores.messageStore[tJid];
-          if (msgs) {
-            const found = msgs.find((msg) => msg.id === messageId);
-            if (found) {
-              found.content = newContent;
-              found.editedAt = editTimestamp;
-              if (editMsgId) {
-                found.latestEditMsgId = editMsgId;
-              }
-              if (found.fromMe) {
-                found.status = 2; // Reset status back to sent (SERVER_ACK) when edited
-              }
-              if (!found.edits) found.edits = [];
-              const exists = found.edits.some((e) => e.editedAt === editTimestamp);
-              if (!exists) {
-                found.edits.push({
-                  operatorId: operator?.id || 'unknown',
-                  operatorName: operator?.name || 'Unknown',
-                  editedAt: editTimestamp,
-                  editMsgId: editMsgId || null,
-                });
-              }
-              updatedEdits = found.edits;
-              database.upsertMessage(found);
-            }
-          }
-        }
-        io.emit('message_edited', { jid, messageId, newContent, editedAt: editTimestamp, edits: updatedEdits });
-        for (const tJid of targetJids) {
-          io.emit('message_status_update', { jid: tJid, messageId, status: 2, fromMe: true });
-        }
-        stores.saveStore();
-      } catch (e) {
-        socket.emit('error', { message: e.message });
-      }
-    });
-
-    socket.on('delete_message', async (data) => {
-      const sock = whatsapp.getSock();
-      if (!sock || whatsapp.getStatus() !== 'connected') return;
-      let { jid, messageId } = data;
-      if (jid) jid = stores.getPreferredJid(jid);
-      const operator = getOperatorFromSocket(socket);
-      const lock = stores.ensureChatLockForOperator(jid, operator);
-      if (!lock.ok) return stores.sendLockError(socket, lock);
-
-      const eligibility = stores.canDeleteForEveryone(jid, messageId, {
-        windowSeconds: DELETE_FOR_EVERYONE_WINDOW_SECONDS,
-      });
-      if (!eligibility.ok) {
-        return socket.emit('error', {
-          message: eligibility.message,
-          jid,
-          code: eligibility.code,
-          windowSeconds: eligibility.windowSeconds,
-          remainingSeconds: eligibility.remainingSeconds,
-        });
-      }
-
-      try {
-        await sock.sendMessage(jid, { delete: { id: messageId, remoteJid: jid, fromMe: true } });
-        const altJid = jid.endsWith('@lid') ? stores.lidToJid[jid] : stores.jidToLid[jid];
-        const targetJids = altJid ? [jid, altJid] : [jid];
-        for (const tJid of targetJids) {
-          const msgs = stores.messageStore[tJid];
-          if (msgs) {
-            const found = msgs.find((msg) => msg.id === messageId);
-            if (found) {
-              found.deleted = true;
-              found.content = '';
-              database.upsertMessage(found);
-            }
-          }
-        }
-        io.emit('message_deleted', { jid, messageId });
-        stores.saveStore();
-      } catch (e) {
         socket.emit('error', { message: e.message });
       }
     });

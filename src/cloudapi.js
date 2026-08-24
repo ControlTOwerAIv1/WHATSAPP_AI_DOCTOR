@@ -865,7 +865,6 @@ function getConfig() {
 // ---------------------------------------------------------------------------
 
 function getStatus() { return connectionStatus; }
-function getQrCodeData() { return null; } // No QR code in Cloud API
 function isReady() { return connectionStatus === 'connected' && ACCESS_TOKEN && PHONE_NUMBER_ID && ACCESS_TOKEN !== 'your_meta_system_user_access_token_here'; }
 function getPhoneNumberId() { return PHONE_NUMBER_ID; }
 
@@ -876,7 +875,7 @@ function getSock() {
     user: { id: PHONE_NUMBER_ID },
     sendMessage: async (jid, payload, options = {}) => {
       if (payload.text !== undefined) {
-        return sendText(jid, payload.text, { quotedMessageId: options?.quoted?.key?.id });
+        return sendText(jid, payload.text, { quotedMessageId: options?.quotedMessageId || options?.quoted?.key?.id });
       }
       if (payload.image) {
         const tmpPath = path.join(MEDIA_DIR, `upload-${Date.now()}.jpg`);
@@ -901,12 +900,6 @@ function getSock() {
       if (payload.location) {
         return sendLocation(jid, payload.location.degreesLatitude, payload.location.degreesLongitude, payload.location.name);
       }
-      if (payload.edit) {
-        throw new Error('Message editing is not supported by the WhatsApp Cloud API.');
-      }
-      if (payload.delete) {
-        throw new Error('Delete for everyone is not supported by the WhatsApp Cloud API.');
-      }
       throw new Error(`Unsupported message payload: ${Object.keys(payload).join(', ')}`);
     },
     readMessages: async (keys) => {
@@ -917,10 +910,6 @@ function getSock() {
     onWhatsApp: async (number) => {
       const clean = String(number).replace(/[^0-9]/g, '');
       return [{ jid: `${clean}@s.whatsapp.net`, exists: true }];
-    },
-    groupMetadata: async () => null,
-    groupCreate: async () => {
-      throw new Error('Group creation is not supported by WhatsApp Cloud API');
     },
     updateMediaMessage: async (raw) => raw,
   };
@@ -935,26 +924,15 @@ function markChatAsRead(jid) {
   }
 }
 
-async function requestOlderHistory() {
-  return { ok: true, added: 0, hasMore: false, exhausted: true, message: 'History sync is not available with the WhatsApp Cloud API.' };
-}
-
-async function loadGroups() {
-  console.log('[CloudAPI] Group sync is not available via Cloud API.');
-}
-
 module.exports = {
   init,
   configure,
   getSock,
   getStatus,
-  getQrCodeData,
   isReady,
   getPhoneNumberId,
   connectToWhatsApp,
   disconnectWhatsApp,
-  loadGroups,
-  requestOlderHistory,
   markChatAsRead,
   markAsRead,
   handleWebhookVerification,

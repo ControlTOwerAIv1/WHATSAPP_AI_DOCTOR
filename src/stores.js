@@ -1,6 +1,5 @@
 /**
- * In-memory chat/message/contact state, JID<->LID resolution, and chat
- * assignment (locking) logic.
+ * In-memory chat/message/contact state and chat assignment (locking) logic.
  *
  * `database`, `io`, and `sock` are injected via setters rather than
  * required directly, since this module is constructed before the
@@ -23,92 +22,15 @@ const contactStore = {};
 const chatStore = {};
 const operatorReads = {};
 const flaggedMessages = {};
-// Maps @lid JIDs to their corresponding @s.whatsapp.net JID and vice-versa.
-// WhatsApp's multi-device protocol uses opaque @lid identifiers internally;
-// we track both directions so resolveContactName() works regardless of format.
-const lidToJid = {};  // "hex123@lid" -> "91987...@s.whatsapp.net"
-const jidToLid = {};  // "91987...@s.whatsapp.net" -> "hex123@lid"
 
 let connectorOperatorId = null;
 let connectorOperatorName = null;
 let linkingOperator = null;
 
 let saveTimer = null;
-const pendingResolutions = new Set();
-// Guards normalizeChat()'s catch-up merge (below) from re-scheduling a merge
-// for the same @lid while one is already queued — without this, every
-// broadcastChats() -> sortedChats() -> normalizeChat() pass would re-queue
-// another merge + broadcast for any @lid chat still present, and each of
-// those broadcasts triggers the same pass again, fanning out without bound.
-const pendingLidMerges = new Set();
-// LIDs that returned null from getPNForLID — maps lid -> timestamp of last failed attempt.
-// Persisted to disk so restarts don't re-flood with retries for already-failed LIDs.
-// In-memory: skipped for LID_RETRY_COOLDOWN_MS to avoid flooding on every render.
-// On disk: all failures are kept permanently until the LID actually resolves.
-const failedResolutions = new Map();
-const LID_RETRY_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour between render-time retries
-const LID_FAILED_CACHE_FILE = () => ROOT_DIR ? path.join(ROOT_DIR, 'data', 'failed_lids.json') : null;
-
-function loadFailedResolutions() {
-  const file = LID_FAILED_CACHE_FILE();
-  if (!file) return;
-  try {
-    if (fs.existsSync(file)) {
-      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-      // Load ALL past failures — don't filter by age.
-      // This prevents flooding on restart. The background resolver will retry
-      // them slowly over time; render-time retries are throttled by LID_RETRY_COOLDOWN_MS.
-      let count = 0;
-      for (const [lid, ts] of Object.entries(raw)) {
-        failedResolutions.set(lid, ts);
-        count++;
-      }
-      if (count > 0) {
-        console.log(`[Bridge] Loaded ${count} previously-failed LID resolutions from disk (will retry slowly in background).`);
-      }
-    }
-  } catch (e) {
-    // Non-critical — ignore errors reading cache
-  }
-}
-
-// Debounced + async: a burst of failing resolutions (all 145 unresolvable LIDs
-// fail together during a sweep or a broadcast-triggered render pass) used to do
-// one synchronous writeFileSync per failure. On a OneDrive-synced folder each
-// write can block for a long time while the sync client holds the file, and the
-// accumulated blocking starved the event loop - frozen dashboard, and Baileys'
-// keepalive missed its window ("Connection was lost"). One deferred async write
-// per burst instead.
-let failedResolutionsSaveTimer = null;
-function saveFailedResolutions() {
-  if (failedResolutionsSaveTimer) return;
-  failedResolutionsSaveTimer = setTimeout(() => {
-    failedResolutionsSaveTimer = null;
-    const file = LID_FAILED_CACHE_FILE();
-    if (!file) return;
-    try {
-      const dir = path.dirname(file);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      const obj = {};
-      for (const [lid, ts] of failedResolutions) obj[lid] = ts;
-      fs.writeFile(file, JSON.stringify(obj), 'utf8', () => {});
-    } catch (e) {
-      // Non-critical
-    }
-  }, 2000);
-}
-
-function clearFailedResolutions() {
-  failedResolutions.clear();
-  saveFailedResolutions();
-  console.log('[Bridge] Cleared failed LID resolutions cache.');
-}
-const DEFAULT_EDIT_WINDOW_SECONDS = 15 * 60;
-const DEFAULT_DELETE_FOR_EVERYONE_WINDOW_SECONDS = 60 * 60 * 60;
 
 const syncState = {
-  syncingHistory: false,
-  resolvingLids: false
+  syncing: false,
 };
 
 function getSyncState() {
@@ -125,7 +47,6 @@ function updateSyncState(updates) {
 function init({ rootDir, config }) {
   ROOT_DIR = rootDir;
   CONFIG = config;
-  loadFailedResolutions();
 }
 
 function setIo(ioInstance) { io = ioInstance; }
@@ -152,8 +73,6 @@ function clearInMemoryStores() {
   for (const key of Object.keys(groupStore)) delete groupStore[key];
   for (const key of Object.keys(contactStore)) delete contactStore[key];
   for (const key of Object.keys(chatStore)) delete chatStore[key];
-  for (const key of Object.keys(lidToJid)) delete lidToJid[key];
-  for (const key of Object.keys(jidToLid)) delete jidToLid[key];
 }
 
 function jidNormalizedUser(jid) {
@@ -166,44 +85,12 @@ function jidNormalizedUser(jid) {
   return jid.split(':')[0];
 }
 
-function addLidMapping(contact) {
-  if (!contact) return;
-  const id = contact.id;
-  if (id) {
-    let lid = null;
-    let pn = null;
-    if (id.endsWith('@lid') && contact.phoneNumber) {
-      lid = id;
-      pn = jidNormalizedUser(contact.phoneNumber);
-    } else if (!id.endsWith('@lid') && contact.lid) {
-      lid = contact.lid;
-      pn = jidNormalizedUser(id);
-    }
-
-    if (lid && pn) {
-      const isNewMapping = !lidToJid[lid];
-      lidToJid[lid] = pn;
-      jidToLid[pn] = lid;
-
-      if (isNewMapping) {
-        console.log(`[Bridge] Discovered mapping during session: ${lid} -> ${pn}`);
-        // Merge chat/messages dynamically!
-        setImmediate(() => {
-          mergeLidChatToPhone(lid, pn);
-          if (io) io.emit('chat_merged', { lid, jid: pn });
-          broadcastChats();
-        });
-      }
-    }
-  }
-}
-
 function cleanJidToPhone(jid) {
   if (!jid) return '';
   if (jid.includes('@')) {
     const parts = jid.split('@');
     const domain = parts[1];
-    if (domain === 's.whatsapp.net' || domain === 'lid') {
+    if (domain === 's.whatsapp.net') {
       const num = parts[0].split(':')[0];
       return num.startsWith('+') ? num : '+' + num;
     }
@@ -222,216 +109,6 @@ function toTimestamp(ts) {
   if (typeof ts === 'string' && ts.trim()) return Number(ts) || 0;
   if (typeof ts === 'object' && 'low' in ts) return ts.low + ts.high * 4294967296;
   return 0;
-}
-
-async function resolveLidToPhoneAsync(lid, options = {}) {
-  const { silent = false, deferSave = false } = options;
-  if (!lid || !lid.endsWith('@lid')) return null;
-  if (lidToJid[lid]) return lidToJid[lid];
-  if (!sock || !sock.user) return null;
-  if (pendingResolutions.has(lid)) return null;
-
-  // Skip LIDs that recently failed to avoid flooding on every render
-  const lastFailed = failedResolutions.get(lid);
-  if (lastFailed && (Date.now() - lastFailed) < LID_RETRY_COOLDOWN_MS) return null;
-
-  pendingResolutions.add(lid);
-  console.log(`[Bridge] Starting resolution for LID: ${lid}`);
-
-  const markFailed = () => {
-    failedResolutions.set(lid, Date.now());
-    if (!deferSave) saveFailedResolutions();
-  };
-
-  try {
-    if (!sock.signalRepository) {
-      console.log(`[Bridge] Cannot resolve LID ${lid}: sock.signalRepository is undefined.`);
-      markFailed();
-      return null;
-    }
-    if (!sock.signalRepository.lidMapping) {
-      console.log(`[Bridge] Cannot resolve LID ${lid}: sock.signalRepository.lidMapping is undefined.`);
-      markFailed();
-      return null;
-    }
-
-    const pnRaw = await sock.signalRepository.lidMapping.getPNForLID(lid);
-    if (pnRaw) {
-      const pn = jidNormalizedUser(pnRaw);
-      console.log(`[Bridge] Resolved LID ${lid} -> PN ${pn}`);
-      lidToJid[lid] = pn;
-      jidToLid[pn] = lid;
-      failedResolutions.delete(lid); // clear any previous failure record
-
-      // Persist to contacts
-      const existing = contactStore[lid] || { id: lid };
-      existing.phoneNumber = pn;
-      contactStore[lid] = existing;
-      database.upsertContact(existing);
-
-      const existingPn = contactStore[pn] || { id: pn };
-      existingPn.lid = lid;
-      contactStore[pn] = existingPn;
-      database.upsertContact(existingPn);
-
-      // Merge LID chat and messages into PN chat
-      mergeLidChatToPhone(lid, pn);
-
-      // A bulk sweep (resolveAllLidsFromStore) resolves many LIDs back to
-      // back - broadcasting the full chat list (every chat, every connected
-      // socket) after each individual one made the server unresponsive for
-      // the whole duration of the sweep. Callers doing bulk work pass
-      // silent:true and broadcast once themselves when the sweep finishes.
-      if (!silent) {
-        if (io) io.emit('chat_merged', { lid, jid: pn });
-        broadcastChats();
-      }
-
-      return pn;
-    } else {
-      // Cache the failure so we don't retry for LID_RETRY_COOLDOWN_MS
-      markFailed();
-    }
-  } catch (e) {
-    console.warn(`[Bridge] Error resolving LID ${lid}:`, e.message);
-    markFailed();
-  } finally {
-    pendingResolutions.delete(lid);
-  }
-
-  return null;
-}
-
-function mergeLidChatToPhone(lid, pn) {
-  if (!lid || !pn) return;
-  console.log(`[Bridge] Merging LID chat ${lid} into phone chat ${pn}`);
-
-  // 1. Merge chats in memory & database
-  if (chatStore[lid]) {
-    const lidChat = chatStore[lid];
-    if (chatStore[pn]) {
-      // Merge unread count and keep the more recent timestamp
-      chatStore[pn].unreadCount += lidChat.unreadCount;
-      if (lidChat.timestamp > chatStore[pn].timestamp) {
-        chatStore[pn].timestamp = lidChat.timestamp;
-        chatStore[pn].lastMsg = lidChat.lastMsg;
-      }
-      database.upsertChat(chatStore[pn]);
-    } else {
-      // Rename chat
-      lidChat.id = pn;
-      lidChat.phone = pn.split('@')[0].split(':')[0];
-      chatStore[pn] = lidChat;
-      database.upsertChat(lidChat);
-    }
-    delete chatStore[lid];
-    try {
-      database.db.prepare('DELETE FROM chats WHERE id = ?').run(lid);
-    } catch (err) {
-      console.warn('[Bridge] Error deleting chat from database:', err.message);
-    }
-  }
-
-  // 2. Merge messages in memory
-  if (messageStore[lid]) {
-    if (!messageStore[pn]) messageStore[pn] = [];
-    const combined = [...messageStore[pn], ...messageStore[lid]];
-    const unique = [];
-    const seen = new Set();
-    for (const msg of combined) {
-      if (!seen.has(msg.id)) {
-        seen.add(msg.id);
-        msg.jid = pn;
-        if (msg.from === lid) msg.from = pn;
-        unique.push(msg);
-      }
-    }
-    messageStore[pn] = unique.sort((a, b) => toTimestamp(a.timestamp) - toTimestamp(b.timestamp));
-    delete messageStore[lid];
-  }
-
-  // 3. Update database messages
-  try {
-    const sql = `
-      UPDATE messages 
-      SET jid = ?, 
-          payload = json_set(
-            json_set(payload, '$.jid', ?),
-            '$.from', 
-            CASE WHEN json_extract(payload, '$.from') = ? THEN ? ELSE json_extract(payload, '$.from') END
-          )
-      WHERE jid = ?
-    `;
-    database.db.prepare(sql).run(pn, pn, lid, pn, lid);
-  } catch (err) {
-    console.warn('[Bridge] Error migrating database messages:', err.message);
-  }
-}
-
-async function resolveAllLidsFromStore() {
-  if (!sock || !sock.user) return;
-  // Reconnect and history-sync-completion can both trigger this close
-  // together; without this guard they'd run two full sweeps over the same
-  // backlog concurrently.
-  if (syncState.resolvingLids) return;
-  updateSyncState({ resolvingLids: true });
-  try {
-    const now = Date.now();
-    const lidsToTry = new Set();
-
-    for (const jid of Object.keys(chatStore)) {
-      if (jid.endsWith('@lid') && !lidToJid[jid]) lidsToTry.add(jid);
-    }
-    for (const jid of Object.keys(contactStore)) {
-      if (jid.endsWith('@lid') && !lidToJid[jid]) lidsToTry.add(jid);
-    }
-
-    // Separate into: never tried vs recently failed (skip) vs old failures (retry quietly)
-    const fresh = [];
-    const stale = [];
-    for (const jid of lidsToTry) {
-      const lastFailed = failedResolutions.get(jid);
-      if (!lastFailed) {
-        fresh.push(jid); // never tried
-      } else if (now - lastFailed > LID_RETRY_COOLDOWN_MS) {
-        stale.push(jid); // failed before but worth a quiet retry
-      }
-      // else: failed recently, skip entirely
-    }
-
-    const skipped = lidsToTry.size - fresh.length - stale.length;
-    console.log(`[Bridge] Background LID resolution: ${fresh.length} new, ${stale.length} retry, ${skipped} skipped (recently failed)`);
-
-    let resolvedCount = 0;
-    for (const jid of [...fresh, ...stale]) {
-      if (!sock || !sock.user) break;
-      // getPNForLID is a local lookup against Baileys' own auth-state cache,
-      // not a network call - there's no rate limit to respect here. silent
-      // skips the per-item full chat-list broadcast (see resolveLidToPhoneAsync)
-      // and deferSave skips the per-item disk write; both are done once below
-      // instead. The 500ms-per-item delay this used to have meant a backlog of
-      // ~100+ LIDs made the server unresponsive for over a minute on every
-      // reconnect. setImmediate (unlike await Promise.resolve(), which only
-      // drains microtasks) genuinely yields to pending IO/timers between
-      // iterations, so cache-hit runs can't starve the event loop.
-      const pn = await resolveLidToPhoneAsync(jid, { silent: true, deferSave: true });
-      if (pn) resolvedCount++;
-      // Pause 50ms between iterations so Node's V8 Garbage Collector can free
-      // memory allocations generated during array merging and DB updates.
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    saveFailedResolutions();
-    if (resolvedCount > 0) broadcastChats();
-
-    if (resolvedCount > 0) {
-      console.log(`[Bridge] Background resolution finished. Resolved ${resolvedCount} LIDs to phone numbers.`);
-      backfillContactNames();
-    } else if (fresh.length + stale.length > 0) {
-      console.log('[Bridge] Background LID resolution finished. No new LIDs resolved.');
-    }
-  } finally {
-    updateSyncState({ resolvingLids: false });
-  }
 }
 
 // Backfill lastHandledBy* for chats from before the feature existed: outgoing
@@ -460,31 +137,8 @@ function normalizeChat(chat = {}, operatorId = null) {
   resolveLastHandledFromHistory(chat);
   let phone = null;
   const id = chat.id;
-  if (id) {
-    if (id.endsWith('@s.whatsapp.net')) {
-      phone = id.split('@')[0].split(':')[0];
-    } else if (id.endsWith('@lid')) {
-      const phoneJid = lidToJid[id];
-      if (phoneJid) {
-        phone = phoneJid.split('@')[0].split(':')[0];
-        // Catch-up merge: a mapping exists but this chat is still stored under
-        // the LID (e.g. loaded from disk before the mapping was learned).
-        // Guarded so repeated normalizeChat() calls for the same @lid (which
-        // happen constantly via sortedChats/broadcastChats) don't each queue
-        // their own merge+broadcast.
-        if (chatStore[id] && !pendingLidMerges.has(id)) {
-          pendingLidMerges.add(id);
-          setImmediate(() => {
-            pendingLidMerges.delete(id);
-            if (chatStore[id]) {
-              mergeLidChatToPhone(id, phoneJid);
-              if (io) io.emit('chat_merged', { lid: id, jid: phoneJid });
-              broadcastChats();
-            }
-          });
-        }
-      }
-    }
+  if (id && id.endsWith('@s.whatsapp.net')) {
+    phone = id.split('@')[0].split(':')[0];
   }
 
   // Resolve verifiedName from contactStore if not already set on chat
@@ -510,23 +164,9 @@ function normalizeChat(chat = {}, operatorId = null) {
   if (isGroup && id) {
     if (groupStore[id]) {
       const g = groupStore[id];
-      // Presence in groupStore means we're a participant again — group
-      // metadata is authoritative, stale left/readOnly flags must not stick.
       readOnly = g.readOnly !== undefined ? Boolean(g.readOnly) : false;
       if (Array.isArray(g.participants)) {
-        participants = g.participants.map(p => {
-          let resolvedId = p.id;
-          if (p.id && p.id.endsWith('@lid')) {
-            const phoneJid = lidToJid[p.id];
-            if (phoneJid) {
-              resolvedId = phoneJid;
-            }
-          }
-          return {
-            ...p,
-            id: resolvedId
-          };
-        });
+        participants = g.participants;
         if (participants.length === 0) {
           readOnly = true;
         }
@@ -560,24 +200,11 @@ function normalizeMessageRecord(msg = {}) {
   let resolvedSender = msg.sender;
   if (participantJid) {
     resolvedSender = resolveContactName(participantJid) || msg.sender;
-    if (!resolvedSender || resolvedSender === participantJid || resolvedSender.endsWith('@lid') || resolvedSender.endsWith('@s.whatsapp.net') || resolvedSender.includes(':')) {
-      if (participantJid.endsWith('@lid')) {
-        const phoneJid = lidToJid[participantJid];
-        if (phoneJid) {
-          resolvedSender = resolveContactName(phoneJid) || cleanJidToPhone(phoneJid);
-        }
-      } else if (participantJid.endsWith('@s.whatsapp.net')) {
-        const lidJid = jidToLid[participantJid];
-        if (lidJid) {
-          resolvedSender = resolveContactName(lidJid);
-        }
-        if (!resolvedSender) {
-          resolvedSender = cleanJidToPhone(participantJid);
-        }
-      }
+    if (!resolvedSender || resolvedSender === participantJid || resolvedSender.endsWith('@s.whatsapp.net') || resolvedSender.includes(':')) {
+      resolvedSender = cleanJidToPhone(participantJid);
     }
   }
-  if (resolvedSender && (resolvedSender.endsWith('@lid') || resolvedSender.endsWith('@s.whatsapp.net') || resolvedSender.includes(':') || /^\+?\d+$/.test(resolvedSender))) {
+  if (resolvedSender && (resolvedSender.endsWith('@s.whatsapp.net') || resolvedSender.includes(':') || /^\+?\d+$/.test(resolvedSender))) {
     resolvedSender = cleanJidToPhone(resolvedSender);
   }
 
@@ -682,7 +309,6 @@ function parseInteractiveMessageText(m) {
   }
 
   if (m.highlyStructuredMessage) {
-    // hydratedHsm carries the same shape as templateMessage.
     return parseInteractiveMessageText({ templateMessage: m.highlyStructuredMessage.hydratedHsm });
   }
 
@@ -739,8 +365,6 @@ function loadStore() {
     for (const contact of state.contacts) {
       if (contact?.id) {
         contactStore[contact.id] = contact;
-        // Rebuild @lid <-> phone JID cross-reference from persisted contacts.
-        addLidMapping(contact);
       }
     }
     for (const chat of state.chats) {
@@ -749,18 +373,10 @@ function loadStore() {
     for (const msg of state.messages) {
       if (!msg?.jid) continue;
       if (!messageStore[msg.jid]) messageStore[msg.jid] = [];
-      // Same reasoning as addMessageToStore: raw stays in SQLite, not resident
-      // in memory for every message across every chat loaded at boot.
       msg.raw = null;
       messageStore[msg.jid].push(msg);
     }
-    // Baileys' chat-metadata sync never carries message text, so a chat's
-    // lastMsg is otherwise only set when a *new* message event touches it
-    // this session. Chats with plenty of history already in messageStore
-    // (loaded just above) but no new activity since boot would otherwise
-    // show a blank preview forever. allMessagesStmt orders by jid, timestamp,
-    // so each messageStore[jid] here is already ascending - last entry is the
-    // true latest.
+
     for (const jid of Object.keys(messageStore)) {
       syncChatPreviewFromLastMessage(jid);
     }
@@ -773,16 +389,8 @@ function loadStore() {
       cleanupOwnNameFromContacts(storedOwnJid, 'Jafar Beldar');
     }
 
-    // Merge any existing LID chats/messages that already have resolved PNs
-    for (const lid of Object.keys(lidToJid)) {
-      const pn = lidToJid[lid];
-      if (pn && (chatStore[lid] || messageStore[lid])) {
-        mergeLidChatToPhone(lid, pn);
-      }
-    }
-
     console.log(
-      `[Bridge] Loaded SQLite store: ${Object.keys(chatStore).length} chats, ${Object.keys(contactStore).length} contacts, ${Object.keys(messageStore).length} message threads, ${Object.keys(lidToJid).length} lid mappings`
+      `[Bridge] Loaded SQLite store: ${Object.keys(chatStore).length} chats, ${Object.keys(contactStore).length} contacts, ${Object.keys(messageStore).length} message threads`
     );
     if (connectorOperatorId) {
       console.log(`[Bridge] Loaded connector operator: ${connectorOperatorName} (${connectorOperatorId})`);
@@ -794,51 +402,14 @@ function loadStore() {
 
 function sortedChats(operatorId = null) {
   const chats = Object.values(chatStore).map(chat => normalizeChat(chat, operatorId));
-  const filtered = [];
-  const seenPhoneJids = new Set();
-
-  for (const chat of chats) {
-    if (chat.id && !chat.id.endsWith('@lid')) {
-      filtered.push(chat);
-      if (chat.id.endsWith('@s.whatsapp.net')) {
-        seenPhoneJids.add(chat.id);
-      }
-    }
-  }
-
-  for (const chat of chats) {
-    if (chat.id && chat.id.endsWith('@lid')) {
-      const phoneJid = lidToJid[chat.id];
-      if (!phoneJid || !seenPhoneJids.has(phoneJid)) {
-        filtered.push(chat);
-      }
-    }
-  }
-
-  return filtered.sort((a, b) => toTimestamp(b.timestamp) - toTimestamp(a.timestamp));
+  return chats.sort((a, b) => toTimestamp(b.timestamp) - toTimestamp(a.timestamp));
 }
 
 function resolveContactName(jid) {
-  // Direct lookup first.
-  let contact = contactStore[jid];
+  if (!jid) return null;
+  const contact = contactStore[jid];
   if (contact?.name || contact?.verifiedName || contact?.notify) {
     return contact.name || contact.verifiedName || contact.notify;
-  }
-  // Cross-reference: if jid is a @lid, look up the mapped phone JID.
-  const mappedJid = lidToJid[jid];
-  if (mappedJid) {
-    contact = contactStore[mappedJid];
-    if (contact?.name || contact?.verifiedName || contact?.notify) {
-      return contact.name || contact.verifiedName || contact.notify;
-    }
-  }
-  // Cross-reference: if jid is a phone JID, check if the @lid alias has a name.
-  const mappedLid = jidToLid[jid];
-  if (mappedLid) {
-    contact = contactStore[mappedLid];
-    if (contact?.name || contact?.verifiedName || contact?.notify) {
-      return contact.name || contact.verifiedName || contact.notify;
-    }
   }
   return null;
 }
@@ -890,33 +461,11 @@ function cleanupOwnNameFromContacts(ownPhone, ownName) {
   }
 }
 
-// One-directional version of getPreferredJid for writing incoming chat data:
-// redirects an already-resolved @lid to its phone JID, but never redirects a
-// phone JID back to a @lid (unlike getPreferredJid, which does that for
-// message-routing purposes). Using getPreferredJid here would let a stale
-// @lid-keyed chatStore entry hijack a fresh phone-JID chat update, since
-// getPreferredJid returns the @lid whenever chatStore[lidJid] exists and
-// chatStore[phoneJid] hasn't been created yet.
 function resolveChatStorageId(jid) {
-  if (!jid) return jid;
-  if (jid.endsWith('@lid')) {
-    const phoneJid = lidToJid[jid];
-    if (phoneJid) return phoneJid;
-  }
   return jid;
 }
 
 function getPreferredJid(jid) {
-  if (!jid) return jid;
-  if (jid.endsWith('@lid')) {
-    const phoneJid = lidToJid[jid];
-    if (phoneJid) return phoneJid;
-  } else {
-    const lidJid = jidToLid[jid];
-    if (lidJid && chatStore[lidJid] && !chatStore[jid]) {
-      return lidJid;
-    }
-  }
   return jid;
 }
 
@@ -951,169 +500,25 @@ function migrateChatTypes() {
 }
 
 function getMessagesForJid(jid) {
-  const altJid = jid.endsWith('@lid') ? lidToJid[jid] : jidToLid[jid];
-  let msgs = messageStore[jid] || [];
-  if (altJid && messageStore[altJid]) {
-    const combined = [...msgs, ...messageStore[altJid]];
-    const unique = [];
-    const seen = new Set();
-    for (const msg of combined) {
-      if (!seen.has(msg.id)) {
-        seen.add(msg.id);
-        unique.push(msg);
-      }
-    }
-    msgs = unique.sort((a, b) => toTimestamp(a.timestamp) - toTimestamp(b.timestamp));
-  }
-  return msgs;
+  return messageStore[jid] || [];
 }
 
 function toUnixSeconds(ts) {
   const normalized = toTimestamp(ts);
   if (!normalized) return 0;
-  // Defensive normalization: some producers may emit milliseconds.
   if (normalized > 100000000000) return Math.floor(normalized / 1000);
   return normalized;
 }
 
 function getThreadJids(jid) {
-  if (!jid) return [];
-  const preferred = getPreferredJid(jid) || jid;
-  const altJid = preferred.endsWith('@lid') ? lidToJid[preferred] : jidToLid[preferred];
-  return altJid ? [preferred, altJid] : [preferred];
+  return jid ? [jid] : [];
 }
 
 function findMessageInThread(jid, messageId) {
   if (!jid || !messageId) return null;
-  const threadJids = getThreadJids(jid);
-  for (const threadJid of threadJids) {
-    const msgs = messageStore[threadJid];
-    if (!msgs) continue;
-    const found = msgs.find((msg) => msg.id === messageId);
-    if (found) return found;
-  }
-  return null;
-}
-
-function canEditMessage(jid, messageId, options = {}) {
-  const msg = findMessageInThread(jid, messageId);
-  const windowSeconds = Number(options.windowSeconds) || DEFAULT_EDIT_WINDOW_SECONDS;
-  const nowSeconds = toUnixSeconds(options.nowSeconds || Math.floor(Date.now() / 1000));
-
-  if (!msg) {
-    return {
-      ok: false,
-      status: 404,
-      code: 'MESSAGE_NOT_FOUND',
-      message: 'Message not found',
-      windowSeconds,
-      remainingSeconds: 0,
-    };
-  }
-
-  if (!msg.fromMe) {
-    return {
-      ok: false,
-      status: 403,
-      code: 'ONLY_SENT_MESSAGES_EDITABLE',
-      message: 'Only your sent messages can be edited',
-      windowSeconds,
-      remainingSeconds: 0,
-    };
-  }
-
-  if (msg.deleted) {
-    return {
-      ok: false,
-      status: 409,
-      code: 'MESSAGE_ALREADY_DELETED',
-      message: 'Cannot edit a deleted message',
-      windowSeconds,
-      remainingSeconds: 0,
-    };
-  }
-
-  if ((msg.mediaType || 'text') !== 'text') {
-    return {
-      ok: false,
-      status: 400,
-      code: 'ONLY_TEXT_MESSAGES_EDITABLE',
-      message: 'Only text messages can be edited',
-      windowSeconds,
-      remainingSeconds: 0,
-    };
-  }
-
-  const msgSeconds = toUnixSeconds(msg.timestamp);
-  const ageSeconds = Math.max(0, nowSeconds - msgSeconds);
-  const remainingSeconds = Math.max(0, windowSeconds - ageSeconds);
-  if (!msgSeconds || ageSeconds > windowSeconds) {
-    return {
-      ok: false,
-      status: 410,
-      code: 'EDIT_WINDOW_EXPIRED',
-      message: 'Edit window expired (15 minutes)',
-      windowSeconds,
-      remainingSeconds,
-    };
-  }
-
-  return { ok: true, message: msg, windowSeconds, remainingSeconds };
-}
-
-function canDeleteForEveryone(jid, messageId, options = {}) {
-  const msg = findMessageInThread(jid, messageId);
-  const windowSeconds = Number(options.windowSeconds) || DEFAULT_DELETE_FOR_EVERYONE_WINDOW_SECONDS;
-  const nowSeconds = toUnixSeconds(options.nowSeconds || Math.floor(Date.now() / 1000));
-
-  if (!msg) {
-    return {
-      ok: false,
-      status: 404,
-      code: 'MESSAGE_NOT_FOUND',
-      message: 'Message not found',
-      windowSeconds,
-      remainingSeconds: 0,
-    };
-  }
-
-  if (!msg.fromMe) {
-    return {
-      ok: false,
-      status: 403,
-      code: 'ONLY_SENT_MESSAGES_DELETABLE',
-      message: 'Only your sent messages can be deleted for everyone',
-      windowSeconds,
-      remainingSeconds: 0,
-    };
-  }
-
-  if (msg.deleted) {
-    return {
-      ok: false,
-      status: 409,
-      code: 'MESSAGE_ALREADY_DELETED',
-      message: 'Message is already deleted',
-      windowSeconds,
-      remainingSeconds: 0,
-    };
-  }
-
-  const msgSeconds = toUnixSeconds(msg.timestamp);
-  const ageSeconds = Math.max(0, nowSeconds - msgSeconds);
-  const remainingSeconds = Math.max(0, windowSeconds - ageSeconds);
-  if (!msgSeconds || ageSeconds > windowSeconds) {
-    return {
-      ok: false,
-      status: 410,
-      code: 'DELETE_WINDOW_EXPIRED',
-      message: 'Delete for everyone window expired (60 hours)',
-      windowSeconds,
-      remainingSeconds,
-    };
-  }
-
-  return { ok: true, message: msg, windowSeconds, remainingSeconds };
+  const msgs = messageStore[jid];
+  if (!msgs) return null;
+  return msgs.find((msg) => msg.id === messageId) || null;
 }
 
 function backfillContactNames() {
@@ -1178,27 +583,11 @@ function addMessageToStore(msg, options = {}) {
       clientTempId: existing.clientTempId || normalized.clientTempId,
     };
   }
-  // finalMsg (with raw intact) is what gets persisted to the database, either
-  // right here or - when skipDbWrite is set (bulk history sync) - later by
-  // the caller collecting return values into its own array and calling
-  // database.saveMessages(). Nulling raw on this same object before it was
-  // returned meant history-synced messages (skipDbWrite path) never got their
-  // raw payload written to the database at all - stripped before it ever
-  // reached upsertMessage. The in-memory resident copy (messageStore[jid])
-  // needs to stay lean (see reasoning below) but must be a separate object
-  // from what's returned/persisted.
+
   if (!options.skipDbWrite) {
     database.upsertMessage(finalMsg);
   }
-  // The full decrypted protobuf (raw) is already durably stored in SQLite
-  // (above, or via the caller's deferred saveMessages). Keeping it live in
-  // the in-memory messageStore too means every cached message (up to
-  // MAX_MESSAGES_PER_CHAT per chat, across every chat ever loaded) carries
-  // its full raw payload - thumbnails, media keys, etc. - resident in memory
-  // indefinitely. With thousands of chats this was the dominant contributor
-  // to multi-GB heap growth. Consumers that need raw (edit/delete-for-
-  // everyone, media re-download) fall back to querying it from the database
-  // when it's missing here.
+
   const memoryMsg = finalMsg.raw !== null ? { ...finalMsg, raw: null } : finalMsg;
   if (existingIndex >= 0) {
     messageStore[jid][existingIndex] = memoryMsg;
@@ -1206,9 +595,7 @@ function addMessageToStore(msg, options = {}) {
     messageStore[jid].push(memoryMsg);
   }
   messageStore[jid].sort((a, b) => toTimestamp(a.timestamp) - toTimestamp(b.timestamp));
-  // Skipped for on-demand history backfill ("load older messages"): trimming
-  // to the most recent N here would discard the older messages immediately
-  // after fetching them once a thread is already at the cap.
+
   if (!options.skipTrim && messageStore[jid].length > CONFIG.MAX_MESSAGES_PER_CHAT) {
     messageStore[jid] = messageStore[jid].slice(-CONFIG.MAX_MESSAGES_PER_CHAT);
   }
@@ -1223,15 +610,6 @@ function broadcastChats() {
   }
 }
 
-// Coalesced variants for the high-frequency inbound-message path. Emitting the
-// full chat list (normalizeChat over every chat, per connected operator - and
-// normalizeChat is much heavier for groups, which re-map their whole
-// participant list) plus three COUNT(*) queries on *every* message saturates
-// the single-threaded event loop during a burst (e.g. group spam). That both
-// delays the per-message 'message' emit from flushing (visible lag) and starves
-// timers. The per-message 'message' event still fires immediately in the
-// caller; only the left-panel chat-list/stats refresh is trailing-debounced,
-// and the browser already updates its own chat preview locally on each message.
 let broadcastChatsTimer = null;
 function scheduleBroadcastChats(delay = 200) {
   if (broadcastChatsTimer) return;
@@ -1251,27 +629,12 @@ function scheduleStatsEmit(delay = 1000) {
 }
 
 function chatDisplayName(jid) {
-  let resolvedName = resolveContactName(jid);
-
-  // Format numeric fallback
-  let phoneFallback = jid.split('@')[0];
-  let isUnresolvedLid = false;
-  if (jid.endsWith('@lid')) {
-    const phoneJid = lidToJid[jid];
-    if (phoneJid) {
-      phoneFallback = phoneJid.split('@')[0];
-    } else {
-      isUnresolvedLid = true;
-    }
-  }
-  const formattedPhone = '+' + phoneFallback.split(':')[0];
+  const resolvedName = resolveContactName(jid);
+  const formattedPhone = cleanJidToPhone(jid);
 
   if (resolvedName) {
     const isAmbiguous = !resolvedName || resolvedName.length <= 2 || /^\+?\d+$/.test(resolvedName);
     if (isAmbiguous && jid && !jid.endsWith('@g.us')) {
-      if (isUnresolvedLid) {
-        return `${resolvedName} (LID: ${phoneFallback})`;
-      }
       return `${resolvedName} (${formattedPhone})`;
     }
     return resolvedName;
@@ -1279,10 +642,6 @@ function chatDisplayName(jid) {
 
   if (jid.endsWith('@s.whatsapp.net')) {
     return formattedPhone;
-  }
-
-  if (jid.endsWith('@lid')) {
-    return `LID: ${phoneFallback}`;
   }
 
   return jid?.split('@')[0]?.split(':')[0] || jid;
@@ -1378,26 +737,11 @@ function updateChatPreview(jid, lastMsg, timestamp, fromMe = true, status = null
   chat.lastMsg = lastMsg || '';
   chat.timestamp = toTimestamp(timestamp);
   chat.unreadCount = 0;
-  // WhatsApp only shows delivery/read ticks on the chat-list preview for
-  // messages we sent, never for ones we received.
   chat.lastMsgFromMe = Boolean(fromMe);
   chat.lastMsgStatus = fromMe ? (status ?? null) : null;
-
-  // Also clear unread count for alternate LID/JID mapping if it exists
-  const altJid = jid.endsWith('@lid') ? lidToJid[jid] : jidToLid[jid];
-  if (altJid && chatStore[altJid]) {
-    chatStore[altJid].unreadCount = 0;
-  }
-
   return chat;
 }
 
-// Refreshes a chat's list-preview fields (text, timestamp, sent/read ticks)
-// from the actual latest message in messageStore, rather than leaving them
-// however Baileys' bare chat-metadata sync left them (which carries no
-// message text at all). messageStore[jid] is kept fully sorted ascending by
-// addMessageToStore, so the last entry is always the true latest known
-// message for that thread regardless of which sync batch touched it.
 function syncChatPreviewFromLastMessage(jid) {
   const msgs = messageStore[jid];
   if (!msgs || msgs.length === 0) return;
@@ -1500,10 +844,6 @@ function unflagMessage(messageId) {
 }
 
 function getFlaggedMessages() {
-  // The stored flag record only ever held metadata (who flagged it, when,
-  // any note) - never the message itself - so the panel had nothing to show
-  // but the raw messageId. Look the actual message up for display, falling
-  // back to the database in case it's aged out of the in-memory cache.
   return Object.values(flaggedMessages)
     .sort((a, b) => b.flaggedAt - a.flaggedAt)
     .map((flag) => {
@@ -1513,7 +853,7 @@ function getFlaggedMessages() {
           const row = database.db.prepare('SELECT payload FROM messages WHERE id = ?').get(flag.messageId);
           if (row) msg = JSON.parse(row.payload);
         } catch (e) {
-          // Non-critical - fall through with whatever we have.
+          // Non-critical
         }
       }
       return {
@@ -1530,28 +870,18 @@ function getMessageFlag(messageId) {
   return flaggedMessages[messageId] || null;
 }
 
-// NOTE: seen-status is currently GLOBAL across operators - once any operator
-// reads a chat, the unread badge clears for everyone. Per-operator read
-// pointers are still recorded (setOperatorReadPointer) so per-operator badges
-// can be reinstated later by scanning only operatorReads[operatorId] here
-// again; the operatorId parameter is kept for that reason.
 function getUnreadCountForOperator(chatId, operatorId) {
   const chat = chatStore[chatId];
   if (!chat) return 0;
-
-  const preferredJid = getPreferredJid(chatId) || chatId;
-  const threadJids = getThreadJids(preferredJid);
 
   let lastReadTimestamp = -1;
   let hasPointer = false;
 
   for (const reads of Object.values(operatorReads)) {
-    for (const jid of threadJids) {
-      const ptr = reads[jid];
-      if (ptr && ptr.timestamp > lastReadTimestamp) {
-        lastReadTimestamp = ptr.timestamp;
-        hasPointer = true;
-      }
+    const ptr = reads[chatId];
+    if (ptr && ptr.timestamp > lastReadTimestamp) {
+      lastReadTimestamp = ptr.timestamp;
+      hasPointer = true;
     }
   }
 
@@ -1559,12 +889,7 @@ function getUnreadCountForOperator(chatId, operatorId) {
     return Number(chat.unreadCount || 0);
   }
 
-  // Query database for the exact count
-  let totalUnread = 0;
-  for (const jid of threadJids) {
-    totalUnread += database.getUnreadCountForOperator(jid, lastReadTimestamp);
-  }
-  return totalUnread;
+  return database.getUnreadCountForOperator(chatId, lastReadTimestamp);
 }
 
 module.exports = {
@@ -1589,19 +914,11 @@ module.exports = {
   groupStore,
   contactStore,
   chatStore,
-  lidToJid,
-  jidToLid,
   operatorReads,
 
   clearInMemoryStores,
-  addLidMapping,
   cleanJidToPhone,
   toTimestamp,
-  resolveLidToPhoneAsync,
-  resolveAllLidsFromStore,
-  clearFailedResolutions,
-  canEditMessage,
-  canDeleteForEveryone,
   findMessageInThread,
   normalizeChat,
   normalizeMessageRecord,
