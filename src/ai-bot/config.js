@@ -37,6 +37,7 @@ function init(rootDir) {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
     googleCredentialsFile: path.resolve(rootDir, process.env.GOOGLE_CREDENTIALS_FILE || 'credentials.json'),
     googleSheetId: process.env.GOOGLE_SHEET_ID || '',
+    adminPhoneNumber: normalizePhone(process.env.ADMIN_PHONE_NUMBER || '919876543200'),
     enabled: (process.env.AI_BOT_ENABLED || 'true').toLowerCase() === 'true',
   };
 
@@ -76,6 +77,15 @@ function isDoctorJid(jid) {
 }
 
 /**
+ * Check if a phone number belongs to the admin.
+ */
+function isAdminPhone(phone) {
+  const normalized = normalizePhone(phone);
+  const adminPhone = _config.adminPhoneNumber || normalizePhone(process.env.ADMIN_PHONE_NUMBER || '919876543200');
+  return Boolean(normalized && adminPhone && normalized === adminPhone);
+}
+
+/**
  * Get doctor info for a JID, or null if not a doctor.
  */
 function getDoctorInfo(jid) {
@@ -92,6 +102,7 @@ module.exports = {
   normalizePhone,
   jidToPhone,
   isDoctorJid,
+  isAdminPhone,
   getDoctorInfo,
   getConfig,
 };

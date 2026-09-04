@@ -20,6 +20,8 @@
  */
 
 const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const ADMIN_PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const { getCurrentTimestamp } = require('./clock');
 
 const _sessions = new Map();
 
@@ -32,10 +34,10 @@ function getSession(phone) {
 
   if (existing) {
     // Check for expiration
-    if (Date.now() - existing.lastActiveAt > SESSION_TTL_MS) {
+    if (getCurrentTimestamp() - existing.lastActiveAt > SESSION_TTL_MS) {
       _sessions.delete(phone);
     } else {
-      existing.lastActiveAt = Date.now();
+      existing.lastActiveAt = getCurrentTimestamp();
       return existing;
     }
   }
@@ -44,12 +46,15 @@ function getSession(phone) {
     stage: 'start',
     name: null,
     condition: null,
+    slotPreference: null,
+    offeredSlot: null,
     offeredSlots: null,
     initialRequest: null,
     nameFailures: 0,
     conditionFailures: 0,
+    adminPending: null,
     history: [],
-    lastActiveAt: Date.now(),
+    lastActiveAt: getCurrentTimestamp(),
   };
   _sessions.set(phone, session);
   return session;
@@ -61,7 +66,7 @@ function getSession(phone) {
 function updateSession(phone, data) {
   const session = getSession(phone);
   Object.assign(session, data);
-  session.lastActiveAt = Date.now();
+  session.lastActiveAt = getCurrentTimestamp();
 }
 
 /**
@@ -69,6 +74,41 @@ function updateSession(phone, data) {
  */
 function clearSession(phone) {
   _sessions.delete(phone);
+}
+
+/**
+ * Get pending admin action for a phone number, expiring after 10 minutes.
+ */
+function getAdminPending(phone) {
+  const session = getSession(phone);
+  if (!session.adminPending) return null;
+
+  const now = getCurrentTimestamp();
+  if (now - (session.adminPending.createdAt || 0) > ADMIN_PENDING_TTL_MS) {
+    session.adminPending = null;
+    return null;
+  }
+  return session.adminPending;
+}
+
+/**
+ * Set pending admin action for a phone number.
+ */
+function setAdminPending(phone, pendingAction) {
+  const session = getSession(phone);
+  session.adminPending = {
+    ...pendingAction,
+    createdAt: getCurrentTimestamp(),
+  };
+  session.lastActiveAt = getCurrentTimestamp();
+}
+
+/**
+ * Clear pending admin action for a phone number.
+ */
+function clearAdminPending(phone) {
+  const session = getSession(phone);
+  session.adminPending = null;
 }
 
 /**
@@ -80,11 +120,16 @@ function clearSession(phone) {
  */
 function appendHistory(phone, role, content) {
   const session = getSession(phone);
+  const last = session.history[session.history.length - 1];
+  if (last && last.role === role && last.content === content) {
+    session.lastActiveAt = getCurrentTimestamp();
+    return;
+  }
   session.history.push({ role, content });
   if (session.history.length > 20) {
     session.history = session.history.slice(-20);
   }
-  session.lastActiveAt = Date.now();
+  session.lastActiveAt = getCurrentTimestamp();
 }
 
 /**
@@ -102,7 +147,7 @@ function getHistory(phone, lastN = 10) {
  * Periodic cleanup of expired sessions (call from a timer if desired).
  */
 function cleanupExpiredSessions() {
-  const now = Date.now();
+  const now = getCurrentTimestamp();
   let cleaned = 0;
   for (const [phone, session] of _sessions) {
     if (now - session.lastActiveAt > SESSION_TTL_MS) {
@@ -119,6 +164,9 @@ module.exports = {
   getSession,
   updateSession,
   clearSession,
+  getAdminPending,
+  setAdminPending,
+  clearAdminPending,
   appendHistory,
   getHistory,
   cleanupExpiredSessions,

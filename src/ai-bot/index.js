@@ -2,13 +2,14 @@
  * AI Bot — Main Entry Point
  *
  * Initializes the AI bot module and provides the message handler
- * that hooks into the whatsapp.js messages.upsert pipeline.
+ * that hooks into the Meta WhatsApp Cloud API incoming message pipeline.
  *
  * Routing logic:
  *   1. Skip group messages, own messages, and non-text messages
- *   2. Check if sender is a registered doctor → doctor-agent
- *   3. Otherwise → patient-agent
- *   4. Send reply via sock.sendMessage()
+ *   2. Check if sender is admin (ADMIN_PHONE_NUMBER) → admin-agent
+ *   3. Check if sender is a registered doctor → doctor-agent
+ *   4. Otherwise → patient-agent
+ *   5. Send reply via Meta Cloud API socket adapter (sock.sendMessage)
  *
  * The bot runs as a fire-and-forget async call — it never blocks
  * the existing message processing pipeline.
@@ -17,6 +18,7 @@
 const botConfig = require('./config');
 const patientAgent = require('./patient-agent');
 const doctorAgent = require('./doctor-agent');
+const adminAgent = require('./admin-agent');
 const sessionStore = require('./session');
 
 let _sock = null;
@@ -54,8 +56,8 @@ function init({ rootDir }) {
 }
 
 /**
- * Set the active Baileys socket for sending replies.
- * Called whenever the socket reconnects.
+ * Set the WhatsApp sender interface for sending AI bot replies.
+ * Receives the socket adapter from cloudapi.js exposing sendMessage().
  */
 function setSock(sock) {
   _sock = sock;
@@ -90,8 +92,8 @@ function _recordBotSent(sentResult, replyText) {
 }
 
 /**
- * Handle an incoming parsed message from the messages.upsert handler.
- * This is the main integration point with whatsapp.js.
+ * Handle an incoming parsed message from the Cloud API webhook receiver.
+ * Evaluates sender role, enforces rules, and triggers corresponding agent.
  *
  * @param {Object} parsed - Normalized message record from stores.normalizeMessageRecord
  */
@@ -167,7 +169,10 @@ async function handleIncomingMessage(parsed) {
     let reply;
     const doctorInfo = botConfig.getDoctorInfo(jid);
 
-    if (doctorInfo) {
+    if (botConfig.isAdminPhone(phone)) {
+      console.log(`[AI-Bot] 👑 Admin identified: ${phone}${doctorInfo ? ` (also Doctor: ${doctorInfo.name})` : ''}`);
+      reply = await adminAgent.handleAdminMessage(phone, messageText, senderName, doctorInfo);
+    } else if (doctorInfo) {
       console.log(`[AI-Bot] Doctor identified: ${doctorInfo.name}`);
       reply = await doctorAgent.handleDoctorMessage(phone, messageText, doctorInfo);
     } else {

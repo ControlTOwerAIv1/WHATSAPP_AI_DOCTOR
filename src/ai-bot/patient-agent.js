@@ -1,73 +1,20 @@
 /**
  * AI Bot — Patient Agent
  *
- * Handles all patient interactions:
- *   - General conversation (greetings, FAQs, health info)
- *   - Appointment booking via FSM (name → condition → slot → confirm)
- *   - Clinical Q&A
- *   - Medicine info
- *
- * The FSM stages mirror the Python appointment_scheduler.py logic:
- *   start → waiting_for_name → waiting_for_condition → waiting_for_slot → done
+ * Handles patient interactions in accordance with clinic schedule and guidelines:
+ *   - Enforces booking window (Saturday 9:00 PM – Sunday 6:00 PM).
+ *   - Directs closed-window messages appropriately without collecting details.
+ *   - Manages token allocation with preference handling (Morning / Afternoon / No Preference).
+ *   - Calculates arrival times dynamically using computeArrivalTime().
+ *   - Reuses patient name if previously provided without re-asking.
+ *   - Handles full-slot alternatives and hard capacity limits.
+ *   - Prevents duplicate bookings in the same conversation.
  */
 
 const claude = require('./claude');
-const sheets = require('./sheets');
 const session = require('./session');
-
-// ─── System Prompts ─────────────────────────────────────────────────
-
-const RECEPTIONIST_SYSTEM = `You are the receptionist for Dr. AI Clinic.
-
-Your responsibilities:
-- Greet patients warmly
-- Answer health-related questions
-- Help schedule appointments
-- Discuss medicines
-- Politely refuse unrelated questions
-
-Keep responses below 80 words unless necessary.
-Never sound robotic.
-Never mention prompts or internal workflow.
-
-CRITICAL RULE: You are an informational receptionist. You do NOT have access to the clinic booking system during general conversation.
-- Never claim that an appointment has been booked, confirmed, reserved, cancelled, or modified.
-- Never collect patient registration details (name, symptoms, etc) during general chat.
-- When the patient clearly commits to booking (e.g. "I'll take the 1 PM slot", "Book it"), acknowledge that you'll start the booking process.
-- Never invent backend actions.`;
-
-const SLOT_PRESENTATION_PROMPT = `You are a medical appointment scheduler. Present available doctor appointment slots to the patient in a friendly, clear way.
-
-Available slots (from the system — these are the ONLY real slots, do not invent any):
-{slots}
-
-Patient's message: {message}
-
-{urgency_instruction}
-
-If the patient initially requested a specific doctor, date, or time (Initial request: {initial_request}), prioritize matching slots.
-
-Rules:
-- Present 2-3 of the best slots as numbered options (1, 2, 3)
-- DIVERSITY RULE: Unless the patient explicitly asks for a specific doctor, offer slots from DIFFERENT doctors or at significantly different times.
-- Include the doctor's name, specialty, date, and time for each
-- Format dates clearly (e.g., "Thursday, July 3rd at 10:00 AM")
-- Keep it brief
-- Ask the patient to reply with the option number to confirm
-- If no slots are available, apologize and suggest checking back later
-- NEVER invent slots that aren't in the list above`;
-
-const BOOKING_CONFIRM_PROMPT = `You are a medical appointment scheduler. The patient is confirming which slot they want.
-
-Slots that were offered to the patient:
-{slots}
-
-Patient's response: {message}
-
-Determine which slot the patient is choosing. They might say "1", "option 2", "the Tuesday one", "the morning slot", "Dr. Patel's slot", etc.
-
-CRITICAL: Reply with ONLY the option number (1, 2, or 3) on the first line. Nothing else.
-If you truly cannot determine which slot, reply with 0.`;
+const schedule = require('./schedule');
+const { getCurrentTime } = require('./clock');
 
 // ─── Main Entry Point ───────────────────────────────────────────────
 
@@ -80,6 +27,7 @@ If you truly cannot determine which slot, reply with 0.`;
  */
 async function handlePatientMessage(phone, message, senderName) {
   const sess = session.getSession(phone);
+  const currentTime = getCurrentTime();
 
   // Record user message in history
   session.appendHistory(phone, 'user', message);
@@ -88,31 +36,49 @@ async function handlePatientMessage(phone, message, senderName) {
   const lower = message.toLowerCase().trim();
   if (['cancel', 'restart', 'start over', 'new appointment', 'never mind'].includes(lower)) {
     session.clearSession(phone);
-    const reply = await claude.chat(
-      'You are the receptionist of Dr AI Clinic.',
-      `The patient just cancelled their current booking by saying "${message}". Acknowledge the cancellation naturally and ask how else you can help them today. Keep it under 2 sentences.`,
-    ) || 'No problem. I\'ve cancelled the current booking. How can I help you today?';
+    const reply = "No problem. I've reset the conversation. How can I help you today?";
     session.appendHistory(phone, 'assistant', reply);
     return reply;
   }
 
-  // ── Route by appointment FSM stage ──
+  // Check intent and current FSM stage
   const stage = sess.stage;
+  let isAppointmentIntent = false;
+
+  if (stage && stage.startsWith('booking_')) {
+    isAppointmentIntent = true;
+  } else {
+    // Quick regex heuristic for common appointment / token phrases
+    const tokenRegex = /\b(token|appointment|slot|subah|morning|afternoon|shaam|naam likh|book)\b/i;
+    const hindiUrduToken = lower.includes('token') || lower.includes('chahiye') || lower.includes('de do') || lower.includes('milega');
+
+    if (tokenRegex.test(message) || hindiUrduToken) {
+      isAppointmentIntent = true;
+    } else {
+      const intent = await claude.classifyIntent(message, stage);
+      isAppointmentIntent = (intent === 'appointment');
+    }
+  }
 
   let reply;
-  if (stage === 'waiting_for_name') {
-    reply = await _handleWaitingForName(phone, message, sess);
-  } else if (stage === 'waiting_for_condition') {
-    reply = await _handleWaitingForCondition(phone, message, sess);
-  } else if (stage === 'waiting_for_slot') {
-    reply = await _handleWaitingForSlot(phone, message, sess);
-  } else {
-    // start stage or no active FSM — classify intent
-    const intent = await claude.classifyIntent(message, stage);
 
-    if (intent === 'appointment') {
-      reply = await _startAppointmentFlow(phone, message, sess);
-    } else if (intent === 'clinical_question') {
+  if (isAppointmentIntent) {
+    // ── Check Booking Window ──
+    const windowStatus = await schedule.isBookingWindowOpen(currentTime);
+    if (!windowStatus.open) {
+      // Outside booking window: do not collect details or issue tokens
+      session.clearSession(phone);
+      reply = windowStatus.message;
+      session.appendHistory(phone, 'assistant', reply);
+      return reply;
+    }
+
+    // Booking window is OPEN
+    reply = await _handleAppointmentBookingFlow(phone, message, sess, senderName, currentTime);
+  } else {
+    // Non-appointment flow
+    const intent = await claude.classifyIntent(message, stage);
+    if (intent === 'clinical_question') {
       reply = await _handleClinicalQuestion(phone, message);
     } else if (intent === 'medicine') {
       reply = await _handleMedicineQuery(phone, message);
@@ -122,193 +88,213 @@ async function handlePatientMessage(phone, message, senderName) {
   }
 
   if (!reply) {
-    reply = 'I\'m sorry, I\'m having a bit of trouble right now. Could you try sending your message again? 🙏';
+    reply = "I'm sorry, I'm having a bit of trouble right now. Could you try sending your message again? 🙏";
   }
 
   session.appendHistory(phone, 'assistant', reply);
   return reply;
 }
 
-// ─── Appointment FSM Handlers ───────────────────────────────────────
+// ─── Appointment Booking Flow ───────────────────────────────────────
 
-async function _startAppointmentFlow(phone, message, sess) {
-  session.updateSession(phone, {
-    stage: 'waiting_for_name',
-    initialRequest: message,
-  });
+async function _handleAppointmentBookingFlow(phone, message, sess, senderName, currentTime) {
+  const targetOperatingDate = await schedule.findNextOperatingDate(currentTime);
+  const existingToken = schedule.getTokenByPhone(phone, targetOperatingDate);
 
-  return await claude.chat(
-    'You are the receptionist of Dr AI Clinic.',
-    `A patient just entered the booking flow by saying: "${message}". Politely and warmly acknowledge their choice (e.g. "Certainly, I can help you book that."), and then ask for their full name to get started. Keep it under 2 sentences.`,
-  ) || 'Certainly! Before I reserve that appointment, may I have your full name?';
-}
-
-async function _handleWaitingForName(phone, message, sess) {
-  const nameFailures = sess.nameFailures || 0;
-  const validation = await claude.validateName(message);
-
-  if (validation.valid || nameFailures >= 2) {
-    // Accept the name
-    const name = validation.name || message.trim();
-    session.updateSession(phone, {
-      stage: 'waiting_for_condition',
-      name,
-      nameFailures: 0,
-    });
-
-    return await claude.chat(
-      'You are the receptionist of Dr AI Clinic.',
-      `The patient just provided their name: ${name}. Thank them naturally and ask them to briefly describe their symptoms or reason for visit. Keep it under 2 sentences.`,
-    ) || `Thank you, ${name}. Could you briefly describe the reason for your visit or your symptoms?`;
-  }
-
-  // Invalid name — ask again
-  session.updateSession(phone, { nameFailures: nameFailures + 1 });
-  return await _generateReprompt('full name', message);
-}
-
-async function _handleWaitingForCondition(phone, message, sess) {
-  const condFailures = sess.conditionFailures || 0;
-  const validation = await claude.validateCondition(message);
-
-  if (validation.valid || condFailures >= 2) {
-    const condition = validation.condition || message.trim();
-    session.updateSession(phone, {
-      condition,
-      conditionFailures: 0,
-    });
-
-    // Fetch available slots
-    const available = await sheets.getAvailableSlots();
-    if (!available || available.length === 0) {
-      session.clearSession(phone);
-      return 'I\'m sorry, there are no available appointment slots right now. 😔\n\nPlease check back later.';
-    }
-
-    // Pick diverse slots
-    const isUrgent = _detectUrgency(condition);
-    const diverse = _pickDiverseSlots(available, 3, isUrgent);
-    const slotsText = _formatSlotsForLLM(diverse);
-
-    // Present slots via Claude
-    const urgencyInstruction = isUrgent
-      ? 'URGENCY DETECTED: The patient mentions urgent symptoms. Prioritize the EARLIEST available slot. Recommend they seek immediate care if symptoms are severe.'
-      : 'This is a routine appointment request. Present slots in a convenient order, considering any time preferences the patient mentioned.';
-
-    const prompt = SLOT_PRESENTATION_PROMPT
-      .replace('{slots}', slotsText)
-      .replace('{message}', condition)
-      .replace('{urgency_instruction}', urgencyInstruction)
-      .replace('{initial_request}', sess.initialRequest || 'None');
-
-    const reply = await claude.chat('', prompt) || `Here are the available appointment slots:\n\n${slotsText}\n\nReply with a number to book.`;
-
-    session.updateSession(phone, {
-      stage: 'waiting_for_slot',
-      offeredSlots: diverse,
-    });
-
-    return reply;
-  }
-
-  // Invalid condition — ask again
-  session.updateSession(phone, { conditionFailures: condFailures + 1 });
-  return await _generateReprompt('medical symptoms or reason for visit', message);
-}
-
-async function _handleWaitingForSlot(phone, message, sess) {
-  const offered = sess.offeredSlots || [];
-  if (offered.length === 0) {
+  // 1. Duplicate Request Check
+  if (existingToken) {
     session.clearSession(phone);
-    return 'Sorry, something went wrong. Please start the booking process again by saying "appointment".';
+    return `${existingToken.patient_name}, you already have an appointment. Your ${existingToken.slot_name} token is #${existingToken.token_number}. Please try to reach the clinic around ${existingToken.arrival_time}. This is an approximate time.`;
   }
 
-  try {
-    const slotsText = _formatSlotsForLLM(offered);
-    const prompt = BOOKING_CONFIRM_PROMPT
-      .replace('{slots}', slotsText)
-      .replace('{message}', message);
-
-    const result = await claude.chat('', prompt, { temperature: 0, maxTokens: 20 });
-    const raw = (result || '').split('\n')[0].trim();
-    let slotNum = parseInt(raw, 10);
-
-    if (isNaN(slotNum) || slotNum < 1 || slotNum > offered.length) {
-      return 'I couldn\'t tell which slot you\'d like. Could you reply with the option number? (e.g., "1", "2", or "3")';
-    }
-
-    const chosen = offered[slotNum - 1];
-    const slotId = (chosen.slot_id || '').toString();
-
-    // Book via Sheets
-    const booking = await sheets.bookSlot(
-      slotId,
-      sess.name || 'Unknown Patient',
-      phone,
-      sess.condition || 'No condition provided',
-    );
-
-    if (!booking) {
-      return 'Oh no — that slot was just booked by someone else! 😔\n\nLet me check what else is available. Send me "appointment" again and I\'ll show you the latest slots.';
-    }
-
-    // Clear session on success
-    session.clearSession(phone);
-
-    return (
-      `✅ Your appointment has been confirmed!\n\n` +
-      `👨‍⚕️ Doctor: Dr. ${booking.doctor_name} (${booking.specialty})\n` +
-      `📅 Date: ${booking.date}\n` +
-      `🕐 Time: ${booking.start_time} – ${booking.end_time}\n` +
-      `🔖 Booking Ref: ${booking.booking_ref}\n\n` +
-      `I'll send you a reminder before your appointment. ` +
-      `If you need to reschedule, just let me know!`
-    );
-  } catch (err) {
-    console.error('[AI-Bot] Booking confirmation failed:', err.message);
-    return 'I couldn\'t process your booking. Could you please specify which option number you\'d like? (e.g., "1" or "2")';
+  // 2. Extract name if available in message or session
+  let name = sess.name;
+  if (!name) {
+    name = _extractNameFromText(message);
   }
-}
 
-// ─── Non-Appointment Handlers ───────────────────────────────────────
+  // 3. Extract slot preference from message or session
+  let preference = sess.slotPreference;
+  const detectedPref = _extractSlotPreference(message);
+  if (detectedPref) {
+    preference = detectedPref;
+    session.updateSession(phone, { slotPreference: preference });
+  }
 
-async function _handleGeneralChat(phone, message) {
-  // Fetch live slots for context
-  let slotsText = 'Could not fetch live slots.';
-  try {
-    const available = await sheets.getAvailableSlots();
-    if (!available || available.length === 0) {
-      slotsText = 'No available slots right now.';
-    } else {
-      slotsText = 'Available doctors and slots:\n';
-      for (const s of available) {
-        slotsText += `- Dr. ${s.doctor_name} (${s.specialty}): ${s.date} at ${s.start_time}\n`;
+  // If in waiting_for_name stage
+  if (sess.stage === 'booking_waiting_for_name') {
+    if (!name) {
+      // Validate with Claude if plain text name was sent
+      const val = await claude.validateName(message);
+      if (val && val.valid && val.name) {
+        name = val.name;
+      } else if (message.trim().length > 1 && message.trim().split(' ').length <= 4) {
+        name = message.trim();
       }
     }
-  } catch (e) {
-    // ignore
+
+    if (!name) {
+      return 'May I please have your full name to proceed with booking your appointment?';
+    }
+
+    session.updateSession(phone, { name });
   }
 
-  // Build messages with history
-  const history = session.getHistory(phone, 10);
+  // If in offering_alternative_slot stage (e.g. morning was full, asked if afternoon is okay)
+  if (sess.stage === 'booking_offering_alternative') {
+    const isAffirmative = _isAffirmative(message);
+    if (isAffirmative && sess.offeredSlot) {
+      preference = sess.offeredSlot;
+      session.updateSession(phone, { slotPreference: preference });
+    } else {
+      session.clearSession(phone);
+      return 'Understood. Please let us know if you would like to book for another clinic day.';
+    }
+  }
+
+  // If in waiting_for_preference stage
+  if (sess.stage === 'booking_waiting_for_preference') {
+    if (!preference) {
+      preference = _extractSlotPreference(message);
+    }
+    if (!preference) {
+      // Default to morning if user just confirms
+      if (_isAffirmative(message)) {
+        preference = 'morning';
+      } else {
+        return 'Sure. Would you prefer a morning or afternoon token?';
+      }
+    }
+    session.updateSession(phone, { slotPreference: preference });
+  }
+
+  // Step A: Do we have the name?
+  if (!name) {
+    session.updateSession(phone, {
+      stage: 'booking_waiting_for_name',
+      slotPreference: preference,
+    });
+    return 'Sure! Before I reserve that token, may I have your full name?';
+  }
+
+  // Step B: Do we have the time preference?
+  // If no preference stated and both slots available -> ask
+  const availability = await schedule.getSlotAvailability(targetOperatingDate);
+  if (!preference) {
+    if (!availability.morning.isFull && !availability.afternoon.isFull) {
+      session.updateSession(phone, {
+        stage: 'booking_waiting_for_preference',
+        name,
+      });
+      return 'Sure. Would you prefer a morning or afternoon token?';
+    } else if (!availability.morning.isFull) {
+      preference = 'morning';
+    } else if (!availability.afternoon.isFull) {
+      preference = 'afternoon';
+    } else {
+      session.clearSession(phone);
+      return `All ${availability.maxTokens} tokens for this date have already been given out.`;
+    }
+  }
+
+  // Step C: Allocate Token
+  const allocation = await schedule.allocateToken({
+    phone,
+    name,
+    slotPreference: preference,
+    currentTime,
+    targetDate: targetOperatingDate,
+  });
+
+  if (allocation.isDuplicate && allocation.token) {
+    session.clearSession(phone);
+    const t = allocation.token;
+    return `${t.patient_name}, you already have a ${t.slot_name} token #${t.token_number}. Please try to reach the clinic around ${t.arrival_time}. This is an approximate time.`;
+  }
+
+  if (!allocation.success) {
+    if (allocation.reason === 'morning_full') {
+      session.updateSession(phone, {
+        stage: 'booking_offering_alternative',
+        name,
+        offeredSlot: 'afternoon',
+      });
+      return 'The morning tokens are currently full. Would you like an afternoon token instead?';
+    }
+    if (allocation.reason === 'afternoon_full') {
+      session.updateSession(phone, {
+        stage: 'booking_offering_alternative',
+        name,
+        offeredSlot: 'morning',
+      });
+      return 'The afternoon tokens are currently full. Would you like a morning token instead?';
+    }
+    if (allocation.reason === 'all_full') {
+      session.clearSession(phone);
+      return `All tokens for this date have already been given out.`;
+    }
+  }
+
+  // Booking confirmed successfully!
+  const token = allocation.token;
+  session.clearSession(phone);
+
+  const slotDisplay = token.slot_name.toLowerCase();
+  return `${token.patient_name}, your ${slotDisplay} token is #${token.token_number}. Please try to reach the clinic around ${token.arrival_time}. This is an approximate time.`;
+}
+
+// ─── Natural Language Extraction Helpers ────────────────────────────
+
+function _extractNameFromText(text) {
+  if (!text) return null;
+  const match = text.match(/(?:my name is|mera naam|naam|name is|i am|this is)\s+([A-Za-z\s]+?)(?:[.,!?]|$|\s+and|\s+i\s|\s+mujhe|\s+token|\s+chahiye|\s+hai|\s+hu|\s+hoon)/i);
+  if (match && match[1].trim()) {
+    let name = match[1].trim();
+    name = name.replace(/\b(hai|hu|hoon|he|here|pls|please)\b/gi, '').trim();
+    return name || null;
+  }
+  return null;
+}
+
+function _extractSlotPreference(text) {
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  if (lower.includes('morning') || lower.includes('subah') || lower.includes('subha') || lower.includes('before lunch') || lower.includes('11:00') || lower.includes('11 am')) {
+    return 'morning';
+  }
+  if (lower.includes('afternoon') || lower.includes('lunch ke baad') || lower.includes('after lunch') || lower.includes('shaam') || lower.includes('sham') || lower.includes('after 3') || lower.includes('evening') || lower.includes('pm')) {
+    return 'afternoon';
+  }
+  return null;
+}
+
+function _isAffirmative(text) {
+  const lower = (text || '').toLowerCase().trim();
+  return ['yes', 'yeah', 'yep', 'sure', 'ok', 'okay', 'ha', 'haan', 'chalega', 'fine', 'proceed', '1', 'yes please'].some(w => lower.startsWith(w) || lower === w);
+}
+
+// ─── Non-Appointment General Chat & Inquiries ────────────────────────
+
+async function _handleGeneralChat(phone, message) {
+  const effectiveTargetDate = await schedule.findNextOperatingDate(getCurrentTime());
+  const systemPrompt = claude.getAppointmentSystemPrompt(effectiveTargetDate);
+  const history = session.getHistory(phone, 6);
   const historyText = history.length > 0
-    ? history.map(m => `${m.role === 'user' ? 'Patient' : 'Dr. AI'}: ${m.content}`).join('\n')
-    : 'No previous conversation history.';
+    ? history.map(m => `${m.role === 'user' ? 'Patient' : 'Receptionist'}: ${m.content}`).join('\n')
+    : 'No previous history.';
 
-  const userPrompt = `Conversation history:\n${historyText}\n\nCurrent Live Appointment Availability:\n${slotsText}\n\nPatient's message: ${message}`;
-
-  return await claude.chat(RECEPTIONIST_SYSTEM, userPrompt);
+  const userPrompt = `Conversation history:\n${historyText}\n\nPatient's message: ${message}`;
+  return await claude.chat(systemPrompt, userPrompt);
 }
 
 async function _handleClinicalQuestion(phone, message) {
   const systemPrompt = `You are a medical AI assistant at Dr. AI Clinic. The patient has a medical question.
 
 Rules:
-- Provide helpful, accurate medical information
-- Always add a disclaimer that this is informational only and they should consult a doctor for proper diagnosis
-- Keep responses under 120 words
-- If the condition sounds urgent, recommend they book an appointment immediately
-- Never diagnose — only inform`;
+- Provide helpful, accurate medical information.
+- Always add a disclaimer that this is informational only and they should consult a doctor for proper diagnosis.
+- Keep responses under 100 words.
+- Never diagnose — only inform.`;
 
   return await claude.chat(systemPrompt, `Patient's question: ${message}`);
 }
@@ -317,77 +303,12 @@ async function _handleMedicineQuery(phone, message) {
   const systemPrompt = `You are a medical AI assistant at Dr. AI Clinic. The patient has a question about medicine.
 
 Rules:
-- Provide general information about medications
-- Always recommend consulting with their doctor before starting, stopping, or changing medication
-- Never prescribe — only inform
-- Keep responses under 100 words
-- For dosage questions, always defer to their prescribing doctor`;
+- Provide general information about medications.
+- Always recommend consulting with their doctor before starting, stopping, or changing medication.
+- Never prescribe — only inform.
+- Keep responses under 100 words.`;
 
   return await claude.chat(systemPrompt, `Patient's question: ${message}`);
-}
-
-// ─── Helpers ────────────────────────────────────────────────────────
-
-async function _generateReprompt(missingField, message) {
-  return await claude.chat(
-    'You are the receptionist of Dr AI Clinic.',
-    `We are waiting for the patient to provide their ${missingField}. They just said: "${message}". Politely steer the conversation back toward collecting their ${missingField}. Do NOT discuss unrelated topics. Keep it under 2 sentences and natural.`,
-  ) || `Please provide your ${missingField} so we can continue booking your appointment.`;
-}
-
-function _detectUrgency(message) {
-  const urgentKeywords = [
-    'urgent', 'emergency', 'chest pain', 'bleeding', "can't breathe",
-    'difficulty breathing', 'severe', 'high fever', 'fainted', 'collapsed',
-    'dizzy', 'numbness', 'stroke', 'heart attack',
-  ];
-  const lower = message.toLowerCase();
-  return urgentKeywords.some(kw => lower.includes(kw));
-}
-
-function _pickDiverseSlots(slots, count = 3, urgent = false) {
-  if (urgent) {
-    slots = [...slots].sort((a, b) => {
-      const aKey = (a.date || '') + (a.start_time || '');
-      const bKey = (b.date || '') + (b.start_time || '');
-      return aKey.localeCompare(bKey);
-    });
-  }
-
-  const picked = [];
-  const seenDoctors = new Set();
-
-  // First pass: one slot per doctor
-  for (const s of slots) {
-    if (picked.length >= count) break;
-    const doc = s.doctor_name || '';
-    if (!seenDoctors.has(doc)) {
-      picked.push(s);
-      seenDoctors.add(doc);
-    }
-  }
-
-  // Second pass: fill remaining
-  if (picked.length < count) {
-    for (const s of slots) {
-      if (picked.length >= count) break;
-      if (!picked.includes(s)) {
-        picked.push(s);
-      }
-    }
-  }
-
-  return picked;
-}
-
-function _formatSlotsForLLM(slots) {
-  return slots.map((s, i) => {
-    const doctor = s.doctor_name || 'Doctor';
-    const specialty = s.specialty || '';
-    const date = s.date || '';
-    const start = s.start_time || '';
-    return `${i + 1}. Dr. ${doctor} (${specialty}) - ${date} at ${start}`;
-  }).join('\n');
 }
 
 module.exports = {

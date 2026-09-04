@@ -12,6 +12,7 @@
 const claude = require('./claude');
 const sheets = require('./sheets');
 const session = require('./session');
+const { getCurrentTime } = require('./clock');
 
 const DOCTOR_SYSTEM = `You are an AI assistant for doctors at Dr. AI Clinic. You are speaking with a registered doctor.
 
@@ -78,7 +79,7 @@ async function handleDoctorMessage(phone, message, doctorInfo) {
 async function _showTodayAppointments(doctorInfo) {
   const bookings = await sheets.getDoctorBookings(doctorInfo.name);
   const schedule = await sheets.getDoctorSchedule(doctorInfo.name);
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getCurrentTime().toISOString().split('T')[0];
   const todaySlots = schedule.filter(s => s.date === todayStr);
 
   if (todaySlots.length === 0) {

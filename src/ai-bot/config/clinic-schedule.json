@@ -1,0 +1,48 @@
+{
+  "clinic_name": "Dr. AI Clinic",
+  "operating_days": ["Sunday"],
+  "operating_days_display": "Sundays",
+  "booking_window": {
+    "start_day": "Saturday",
+    "start_time": "21:00",
+    "start_display": "9:00 PM on Saturday",
+    "end_day": "Sunday",
+    "end_time": "18:00",
+    "end_display": "6:00 PM on Sunday",
+    "closed_message": "Appointments for the coming Sunday will open at 9:00 PM on Saturday."
+  },
+  "max_tokens": 45,
+  "rounding_interval_minutes": 30,
+  "break_period": {
+    "start_time": "13:30",
+    "end_time": "14:30",
+    "start_display": "1:30 PM",
+    "end_display": "2:30 PM"
+  },
+  "slots": {
+    "morning": {
+      "name": "morning",
+      "display_name": "morning",
+      "capitalized_name": "Morning",
+      "start_time": "11:00",
+      "end_time": "13:30",
+      "start_display": "11:00 AM",
+      "end_display": "1:30 PM",
+      "token_cap": 17,
+      "token_start": 1,
+      "token_end": 17
+    },
+    "afternoon": {
+      "name": "afternoon",
+      "display_name": "afternoon",
+      "capitalized_name": "Afternoon",
+      "start_time": "14:30",
+      "end_time": "18:30",
+      "start_display": "2:30 PM",
+      "end_display": "6:30 PM",
+      "token_cap": 28,
+      "token_start": 18,
+      "token_end": 45
+    }
+  }
+}
