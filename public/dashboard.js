@@ -2963,8 +2963,21 @@
       if (savedId) operatorId = savedId;
       if (savedName) operatorName = savedName;
 
-      socket = io(bridgeUrl, {
-        transports: ['websocket'],
+      // Support subpath hosting (e.g. /doctor-automation)
+      let socketPath = '/socket.io';
+      let socketOrigin = bridgeUrl;
+      try {
+        const u = new URL(bridgeUrl);
+        const prefix = u.pathname.replace(/\/+$/, '');
+        if (prefix && prefix !== '/') {
+          socketPath = prefix + '/socket.io';
+          socketOrigin = u.origin;
+        }
+      } catch (e) {}
+
+      socket = io(socketOrigin, {
+        path: socketPath,
+        transports: ['websocket', 'polling'],
         query: {
           operatorId: operatorId || '',
           operatorName: operatorName || ''
@@ -4308,9 +4321,13 @@
     window.addEventListener('online', updateInternetStatus);
     window.addEventListener('offline', updateInternetStatus);
 
-    // Auto-connect to bridge on load
-    const currentOrigin = window.location.protocol.startsWith('http') ? window.location.origin : bridgeUrl;
-    connectBridgeDirect(currentOrigin);
+    // Auto-connect to bridge on load (supports subpath hosting like /doctor-automation)
+    let initialBridgeUrl = bridgeUrl;
+    if (window.location.protocol.startsWith('http')) {
+      const subpath = window.location.pathname.replace(/\/(dashboard\.html)?$/, '').replace(/\/+$/, '');
+      initialBridgeUrl = window.location.origin + subpath;
+    }
+    connectBridgeDirect(initialBridgeUrl);
     initSidebarResize();
     initNotifications();
 
