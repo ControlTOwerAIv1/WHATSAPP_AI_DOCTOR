@@ -12,6 +12,7 @@
 const claude = require('./claude');
 const sheets = require('./sheets');
 const session = require('./session');
+const schedule = require('./schedule');
 const { getCurrentTime } = require('./clock');
 
 const DOCTOR_SYSTEM = `You are an AI assistant for doctors at Dr. AI Clinic. You are speaking with a registered doctor.
@@ -31,6 +32,14 @@ Important instructions:
 - The doctor's name is: {doctor_name}
 - The doctor's specialty is: {specialty}`;
 
+function _formatDoctorTitle(name) {
+  const clean = (name || '').trim();
+  if (/^dr\.?\s+/i.test(clean)) {
+    return clean;
+  }
+  return `Dr. ${clean}`;
+}
+
 /**
  * Handle an incoming message from a doctor.
  * @param {string} phone - Normalized phone number
@@ -42,95 +51,131 @@ async function handleDoctorMessage(phone, message, doctorInfo) {
   session.appendHistory(phone, 'user', message);
 
   const lower = message.toLowerCase().trim();
+  const currentTime = getCurrentTime();
+  const currentDateTimeISO = currentTime.toISOString().substring(0, 19);
 
   try {
     let reply;
 
-    // Direct appointment/schedule command matching
-    if (lower.includes('today') && (lower.includes('appointment') || lower.includes('schedule') || lower.includes('patient') || lower.includes('slot'))) {
-      reply = await _showTodayAppointments(doctorInfo);
-    } else if (lower.includes('schedule') || lower.includes('upcoming') || lower.includes('this week') || lower.includes('tomorrow')) {
+    // 1. Check relative date resolution (Step 8 resolver)
+    const resolvedDate = claude.resolveRelativeDate(message, currentDateTimeISO);
+
+    // 2. Check if asking for upcoming schedule multi-day overview
+    const isUpcomingOverview = (lower.includes('upcoming') || lower.includes('this week') || lower.includes('next week') || lower.includes('overview') || lower.includes('sessions')) && !resolvedDate && !lower.includes('token') && !lower.includes('patient') && !lower.includes('detail') && !lower.includes('name');
+
+    if (isUpcomingOverview) {
       reply = await _showUpcomingSchedule(doctorInfo);
-    } else if (lower.includes('appointment') || lower.includes('patient') || lower.includes('slot') || lower.includes('booking')) {
-      // General appointment query: check today first, if none check upcoming
-      const todayReply = await _showTodayAppointments(doctorInfo);
-      if (todayReply.includes('schedule for today')) {
-        reply = todayReply;
-      } else {
-        reply = await _showUpcomingSchedule(doctorInfo);
-      }
+    } else if (resolvedDate) {
+      // Specific date requested ("this Sunday", "tomorrow", "today", or explicit date)
+      reply = await getBookingsForDate(resolvedDate, doctorInfo);
+    } else if (lower.includes('token') || lower.includes('appointment') || lower.includes('patient') || lower.includes('slot') || lower.includes('booking') || lower.includes('detail') || lower.includes('name') || lower.includes('booked') || lower.includes('schedule') || lower.includes('who is') || lower.includes('list')) {
+      // General booking/token query without a specific date:
+      // Default to next operating date (or today if open)
+      const targetDate = await schedule.findNextOperatingDate(currentTime);
+      reply = await getBookingsForDate(targetDate, doctorInfo);
     } else {
-      // General doctor chat with context
-      reply = await _handleDoctorChat(phone, message, doctorInfo);
+      // Ambiguous query from doctor: default to real booking data rather than claiming no access!
+      const targetDate = await schedule.findNextOperatingDate(currentTime);
+      reply = await getBookingsForDate(targetDate, doctorInfo);
     }
 
     if (!reply) {
-      reply = `Hello Dr. ${doctorInfo.name}! You currently have no appointments scheduled. Let me know if you need anything else!`;
+      reply = `Good day, ${_formatDoctorTitle(doctorInfo.name)}. You currently have no appointments scheduled.`;
     }
 
     session.appendHistory(phone, 'assistant', reply);
     return reply;
   } catch (err) {
     console.error('[AI-Bot] Doctor agent error:', err.message);
-    return `Hello Dr. ${doctorInfo.name}, I'm experiencing a technical issue. Please try again shortly. 🙏`;
+    return `Hello ${_formatDoctorTitle(doctorInfo.name)}, I'm experiencing a technical issue. Please try again shortly.`;
   }
 }
 
-async function _showTodayAppointments(doctorInfo) {
-  const bookings = await sheets.getDoctorBookings(doctorInfo.name);
-  const schedule = await sheets.getDoctorSchedule(doctorInfo.name);
-  const todayStr = getCurrentTime().toISOString().split('T')[0];
-  const todaySlots = schedule.filter(s => s.date === todayStr);
+/**
+ * Show appointments for a specified date (or today) for the doctor using authoritative SQLite tokens.
+ * Generalizes _showTodayAppointments to accept any resolved date.
+ * Returns patient names, tokens, phone numbers, conditions, and arrival times for that date.
+ *
+ * @param {string} targetDate - Date in YYYY-MM-DD
+ * @param {{ name: string, specialty: string }} doctorInfo
+ * @returns {Promise<string>}
+ */
+async function getBookingsForDate(targetDate, doctorInfo) {
+  const currentTime = getCurrentTime();
+  const todayStr = currentTime.toISOString().split('T')[0];
+  const dateStr = targetDate || todayStr;
+  const effectiveSchedule = await schedule.getEffectiveSchedule(dateStr);
+  const isToday = (dateStr === todayStr);
 
-  if (todaySlots.length === 0) {
-    return `Good day, Dr. ${doctorInfo.name}! 👋\n\nYou don't have any scheduled slots for today.`;
+  const d = new Date(`${dateStr}T12:00:00`);
+  const dayName = isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-US', { weekday: 'long' });
+  const dateLabel = isToday ? `today (${dateStr})` : `${dayName ? `${dayName}, ` : ''}${dateStr}`;
+
+  if (!effectiveSchedule.is_open) {
+    return `Good day, ${_formatDoctorTitle(doctorInfo.name)}.\n\nThe clinic is closed on ${dateLabel}.`;
   }
 
-  let reply = `Good day, Dr. ${doctorInfo.name}! 👋\n\nHere's your schedule for today:\n\n`;
+  // Authoritative tokens from SQLite
+  const tokens = schedule.getBookingsForDate(dateStr);
 
-  for (const slot of todaySlots) {
-    const status = (slot.status || '').toLowerCase();
-    const booking = bookings.find(b => b.slot_id === slot.slot_id);
-
-    if (status === 'booked' && booking) {
-      reply += `🕐 ${slot.start_time} – ${slot.end_time}: ${booking.patient_name}\n`;
-      reply += `   📋 Condition: ${booking.condition}\n`;
-      reply += `   📞 Phone: ${booking.patient_phone}\n\n`;
-    } else if (status === 'open') {
-      reply += `🕐 ${slot.start_time} – ${slot.end_time}: ✅ Available\n\n`;
-    } else {
-      reply += `🕐 ${slot.start_time} – ${slot.end_time}: ${status}\n\n`;
-    }
+  if (tokens.length === 0) {
+    return `Good day, ${_formatDoctorTitle(doctorInfo.name)}.\n\nSchedule for ${dateLabel}:\n\nNo patient appointments booked for this date.\nTotal capacity: ${effectiveSchedule.max_tokens} tokens available.`;
   }
 
-  const bookedCount = todaySlots.filter(s => (s.status || '').toLowerCase() === 'booked').length;
-  const openCount = todaySlots.filter(s => (s.status || '').toLowerCase() === 'open').length;
-  reply += `📊 Summary: ${bookedCount} booked, ${openCount} available`;
+  let reply = `Good day, ${_formatDoctorTitle(doctorInfo.name)}.\n\nSchedule for ${dateLabel}:\n\n`;
+
+  for (const t of tokens) {
+    reply += `Token #${t.token_number} (${(t.slot_name || 'morning').toUpperCase()}): ${t.patient_name}\n`;
+    reply += `   Arrival: around ${t.arrival_time}\n`;
+    if (t.condition) reply += `   Condition: ${t.condition}\n`;
+    reply += `   Phone: ${t.patient_phone}\n\n`;
+  }
+
+  const bookedCount = tokens.length;
+  const availableCount = Math.max(0, effectiveSchedule.max_tokens - bookedCount);
+  reply += `Summary: ${bookedCount} booked, ${availableCount} available.`;
 
   return reply;
 }
 
+// Backwards-compatible alias for today's appointments
+const _showTodayAppointments = (doctorInfo) => getBookingsForDate(null, doctorInfo);
+
+/**
+ * Show upcoming schedule using effective schedule & SQLite token counts (Step 4).
+ */
 async function _showUpcomingSchedule(doctorInfo) {
-  const schedule = await sheets.getDoctorSchedule(doctorInfo.name);
+  const currentTime = getCurrentTime();
+  const upcomingSessions = [];
 
-  if (schedule.length === 0) {
-    return `Dr. ${doctorInfo.name}, you don't have any upcoming scheduled slots.`;
+  // Inspect next 14 calendar days
+  for (let i = 0; i < 14; i++) {
+    const d = new Date(currentTime.getTime() + i * 24 * 60 * 60 * 1000);
+    const dateStr = schedule.formatDateToYYYYMMDD(d);
+    const config = await schedule.getEffectiveSchedule(dateStr);
+
+    if (config.is_open) {
+      const tokens = schedule.getTokensForSunday(dateStr);
+      const dayName = d.toLocaleDateString('en-US', { weekday: 'long' });
+      upcomingSessions.push({
+        date: dateStr,
+        dayName,
+        maxTokens: config.max_tokens,
+        booked: tokens.length,
+        available: Math.max(0, config.max_tokens - tokens.length),
+      });
+
+      if (upcomingSessions.length >= 4) break;
+    }
   }
 
-  let reply = `Dr. ${doctorInfo.name}, here's your upcoming schedule:\n\n`;
-
-  // Group by date
-  const byDate = {};
-  for (const slot of schedule) {
-    const date = slot.date || 'Unknown';
-    if (!byDate[date]) byDate[date] = [];
-    byDate[date].push(slot);
+  if (upcomingSessions.length === 0) {
+    return `${_formatDoctorTitle(doctorInfo.name)}, you don't have any upcoming scheduled sessions.`;
   }
 
-  for (const [date, slots] of Object.entries(byDate)) {
-    const booked = slots.filter(s => (s.status || '').toLowerCase() === 'booked').length;
-    const open = slots.filter(s => (s.status || '').toLowerCase() === 'open').length;
-    reply += `📅 ${date}: ${slots.length} slots (${booked} booked, ${open} available)\n`;
+  let reply = `${_formatDoctorTitle(doctorInfo.name)}, here's your upcoming schedule:\n\n`;
+  for (const s of upcomingSessions) {
+    reply += `${s.date} (${s.dayName}): ${s.maxTokens} capacity (${s.booked} booked, ${s.available} available)\n`;
   }
 
   return reply;
@@ -175,4 +220,5 @@ async function _handleDoctorChat(phone, message, doctorInfo) {
 
 module.exports = {
   handleDoctorMessage,
+  getBookingsForDate,
 };

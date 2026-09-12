@@ -105,6 +105,13 @@ function parseBookingOpenString(str, targetDayName = 'Sunday') {
 // ─── Effective Schedule Resolver (Settings + Overrides) ─────────────
 
 let _lastEffectiveSchedule = null;
+let _lastEffectiveScheduleTime = 0;
+const EFFECTIVE_SCHEDULE_TTL_MS = 60 * 1000; // 60 seconds TTL
+
+function _setLastEffectiveSchedule(sched) {
+  _lastEffectiveSchedule = sched;
+  _lastEffectiveScheduleTime = Date.now();
+}
 
 /**
  * Format a Date object into YYYY-MM-DD.
@@ -187,7 +194,7 @@ async function getEffectiveSchedule(date = null) {
         },
         notes: matchingOverride.notes || '',
       };
-      _lastEffectiveSchedule = closedSched;
+      _setLastEffectiveSchedule(closedSched);
       return closedSched;
     }
 
@@ -258,7 +265,7 @@ async function getEffectiveSchedule(date = null) {
       notes: matchingOverride.notes || '',
     };
 
-    _lastEffectiveSchedule = effectiveOverride;
+    _setLastEffectiveSchedule(effectiveOverride);
     return effectiveOverride;
   }
 
@@ -317,15 +324,17 @@ async function getEffectiveSchedule(date = null) {
     },
   };
 
-  _lastEffectiveSchedule = standardSched;
+  _setLastEffectiveSchedule(standardSched);
   return standardSched;
 }
 
 /**
  * Synchronously get the effective schedule using the in-memory cache or default settings.
+ * Enforces 60-second TTL to avoid returning stale cached schedule data indefinitely.
  */
 function getEffectiveScheduleSync(date = null) {
-  if (_lastEffectiveSchedule) {
+  const isFresh = _lastEffectiveSchedule && (Date.now() - _lastEffectiveScheduleTime < EFFECTIVE_SCHEDULE_TTL_MS);
+  if (isFresh) {
     if (!date || _lastEffectiveSchedule.target_date === (typeof date === 'string' ? date : formatDateToYYYYMMDD(date))) {
       return _lastEffectiveSchedule;
     }
@@ -748,6 +757,14 @@ function getTokensForSunday(sundayDate) {
 }
 
 /**
+ * Get all booking records for a given date from SQLite (generalizing for doctor queries).
+ * Returns array of token records with patient names, token numbers, slot, arrival times, conditions, and phones.
+ */
+function getBookingsForDate(targetDateStr) {
+  return getTokensForSunday(targetDateStr);
+}
+
+/**
  * Find existing token for a phone on a given date (duplicate detection).
  */
 function getTokenByPhone(phone, sundayDate) {
@@ -796,85 +813,183 @@ async function getSlotAvailability(targetDate = null) {
 }
 
 /**
- * Allocate a token durably for the patient.
+ * Allocate a token durably for the patient using an atomic SQLite transaction (BEGIN IMMEDIATE).
+ * Eliminates race conditions across concurrent booking requests. (Step 1)
+ * Synced asynchronously to Google Sheets bookings tab (Step 3).
  */
 async function allocateToken({ phone, name, slotPreference = 'morning', condition = '', currentTime = getCurrentTime(), targetDate = null }) {
   const effectiveTargetDate = targetDate || await findNextOperatingDate(currentTime);
   const config = await getEffectiveSchedule(effectiveTargetDate);
   const normalizedPhone = (phone || '').replace(/[^0-9]/g, '');
 
-  // 1. Duplicate check
-  const existing = getTokenByPhone(normalizedPhone, effectiveTargetDate);
-  if (existing) {
-    return {
-      success: true,
-      isDuplicate: true,
-      token: existing,
-    };
-  }
+  const db = _getDatabase();
+  let allocationResult = null;
 
-  // 2. Check availability
-  const availability = await getSlotAvailability(effectiveTargetDate);
-  if (availability.allFull) {
-    return {
-      success: false,
-      reason: 'all_full',
-    };
-  }
+  if (db) {
+    const executeAllocation = db.transaction(() => {
+      // 1. Duplicate check within transaction
+      const existing = db.prepare('SELECT * FROM appointments_tokens WHERE sunday_date = ? AND patient_phone = ?').get(effectiveTargetDate, normalizedPhone);
+      if (existing) {
+        return {
+          success: true,
+          isDuplicate: true,
+          token: existing,
+        };
+      }
 
-  const pref = (slotPreference || 'morning').toLowerCase();
-  const targetSlotName = pref.includes('afternoon') ? 'afternoon' : 'morning';
-  const targetSlotConfig = config.slots[targetSlotName];
-  const targetSlotAvail = availability[targetSlotName];
+      // 2. Query existing tokens atomically
+      const tokens = db.prepare('SELECT * FROM appointments_tokens WHERE sunday_date = ? ORDER BY token_number ASC').all(effectiveTargetDate);
+      const morningTokens = tokens.filter(t => t.slot_name === 'morning');
+      const afternoonTokens = tokens.filter(t => t.slot_name === 'afternoon');
 
-  // If requested slot is full, do not silently assign the other slot
-  if (targetSlotAvail.isFull) {
-    const alternativeSlot = targetSlotName === 'morning' ? 'afternoon' : 'morning';
-    const altAvail = availability[alternativeSlot];
-    if (!altAvail.isFull) {
-      return {
-        success: false,
-        reason: `${targetSlotName}_full`,
-        offeredSlot: alternativeSlot,
+      const morningCap = config.slots.morning.token_cap;
+      const afternoonCap = config.slots.afternoon.token_cap;
+      const maxTokens = config.max_tokens;
+
+      if (tokens.length >= maxTokens) {
+        return {
+          success: false,
+          reason: 'all_full',
+        };
+      }
+
+      const pref = (slotPreference || 'morning').toLowerCase();
+      const targetSlotName = pref.includes('afternoon') ? 'afternoon' : 'morning';
+      const targetSlotConfig = config.slots[targetSlotName];
+      const targetTokens = targetSlotName === 'morning' ? morningTokens : afternoonTokens;
+      const targetCap = targetSlotName === 'morning' ? morningCap : afternoonCap;
+
+      if (targetTokens.length >= targetCap) {
+        const alternativeSlot = targetSlotName === 'morning' ? 'afternoon' : 'morning';
+        const altTokens = alternativeSlot === 'morning' ? morningTokens : afternoonTokens;
+        const altCap = alternativeSlot === 'morning' ? morningCap : afternoonCap;
+        if (altTokens.length < altCap) {
+          return {
+            success: false,
+            reason: `${targetSlotName}_full`,
+            offeredSlot: alternativeSlot,
+          };
+        } else {
+          return {
+            success: false,
+            reason: 'all_full',
+          };
+        }
+      }
+
+      const tokenInSlot = targetTokens.length + 1;
+      const overallTokenNumber = targetSlotName === 'morning'
+        ? (morningTokens.length + 1)
+        : (morningCap + afternoonTokens.length + 1);
+
+      const arrivalTime = computeArrivalTime(
+        tokenInSlot,
+        targetSlotConfig,
+        config.rounding_interval_minutes
+      );
+
+      const bookedAtStr = new Date(currentTime.getTime()).toISOString().replace('T', ' ').substring(0, 19);
+
+      const record = {
+        sunday_date: effectiveTargetDate,
+        token_number: overallTokenNumber,
+        slot_name: targetSlotName,
+        token_in_slot: tokenInSlot,
+        patient_phone: normalizedPhone,
+        patient_name: name || 'Patient',
+        arrival_time: arrivalTime,
+        condition: condition || '',
+        booked_at: bookedAtStr,
       };
-    } else {
+
+      db.prepare(`
+        INSERT INTO appointments_tokens
+        (sunday_date, token_number, slot_name, token_in_slot, patient_phone, patient_name, arrival_time, condition, booked_at)
+        VALUES (@sunday_date, @token_number, @slot_name, @token_in_slot, @patient_phone, @patient_name, @arrival_time, @condition, @booked_at)
+      `).run(record);
+
       return {
-        success: false,
-        reason: 'all_full',
+        success: true,
+        token: record,
       };
+    });
+
+    allocationResult = executeAllocation.immediate();
+  } else {
+    // Fallback if SQLite driver is unavailable
+    const existing = getTokenByPhone(normalizedPhone, effectiveTargetDate);
+    if (existing) {
+      return { success: true, isDuplicate: true, token: existing };
     }
+    const availability = await getSlotAvailability(effectiveTargetDate);
+    if (availability.allFull) {
+      return { success: false, reason: 'all_full' };
+    }
+    const pref = (slotPreference || 'morning').toLowerCase();
+    const targetSlotName = pref.includes('afternoon') ? 'afternoon' : 'morning';
+    const targetSlotConfig = config.slots[targetSlotName];
+    const targetSlotAvail = availability[targetSlotName];
+
+    if (targetSlotAvail.isFull) {
+      const alternativeSlot = targetSlotName === 'morning' ? 'afternoon' : 'morning';
+      const altAvail = availability[alternativeSlot];
+      if (!altAvail.isFull) {
+        return { success: false, reason: `${targetSlotName}_full`, offeredSlot: alternativeSlot };
+      }
+      return { success: false, reason: 'all_full' };
+    }
+
+    const tokenInSlot = targetSlotAvail.nextInSlot;
+    const overallTokenNumber = targetSlotAvail.nextTokenNumber;
+    const arrivalTime = computeArrivalTime(tokenInSlot, targetSlotConfig, config.rounding_interval_minutes);
+
+    const record = {
+      sunday_date: effectiveTargetDate,
+      token_number: overallTokenNumber,
+      slot_name: targetSlotName,
+      token_in_slot: tokenInSlot,
+      patient_phone: normalizedPhone,
+      patient_name: name || 'Patient',
+      arrival_time: arrivalTime,
+      condition: condition || '',
+      booked_at: new Date(currentTime.getTime()).toISOString().replace('T', ' ').substring(0, 19),
+    };
+    _saveTokenToDisk(record);
+    allocationResult = { success: true, token: record };
   }
 
-  // Allocate sequential token
-  const tokenInSlot = targetSlotAvail.nextInSlot;
-  const overallTokenNumber = targetSlotAvail.nextTokenNumber;
+  // Secondary actions after transaction commits
+  if (allocationResult.success && !allocationResult.isDuplicate && allocationResult.token) {
+    const record = allocationResult.token;
 
-  const arrivalTime = computeArrivalTime(
-    tokenInSlot,
-    targetSlotConfig,
-    config.rounding_interval_minutes
-  );
+    // 1. JSON secondary backup
+    try {
+      const dir = path.dirname(TOKENS_JSON_PATH);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const existing = _loadTokensFromDisk();
+      const updated = existing.filter(r => !(r.sunday_date === record.sunday_date && r.token_number === record.token_number));
+      updated.push(record);
+      fs.writeFileSync(TOKENS_JSON_PATH, JSON.stringify(updated, null, 2), 'utf8');
+    } catch (err) {
+      console.warn('[AI-Bot] JSON token save error:', err.message);
+    }
 
-  const record = {
-    sunday_date: effectiveTargetDate,
-    token_number: overallTokenNumber,
-    slot_name: targetSlotName,
-    token_in_slot: tokenInSlot,
-    patient_phone: normalizedPhone,
-    patient_name: name || 'Patient',
-    arrival_time: arrivalTime,
-    condition: condition || '',
-    booked_at: new Date(currentTime.getTime()).toISOString().replace('T', ' ').substring(0, 19),
-  };
+    // 2. Fire-and-forget sync to Google Sheets (Step 3)
+    sheets.appendBookingToSheet({
+      booking_ref: `TKN-${record.token_number}`,
+      slot_id: `${record.sunday_date}-${record.slot_name}-${record.token_in_slot}`,
+      patient_name: record.patient_name,
+      patient_phone: record.patient_phone,
+      condition: record.condition,
+      booked_at: record.booked_at,
+    }).catch(err => {
+      console.error('[AI-Bot] Fire-and-forget Sheets sync error:', err.message);
+    });
 
-  _saveTokenToDisk(record);
+    console.log(`[AI-Bot] ✅ Token allocated: #${record.token_number} (${record.slot_name}) for ${record.patient_name} (${record.patient_phone}) on ${effectiveTargetDate} — Arrival: around ${record.arrival_time}`);
+  }
 
-  console.log(`[AI-Bot] ✅ Token allocated: #${record.token_number} (${record.slot_name}) for ${record.patient_name} (${record.patient_phone}) on ${effectiveTargetDate} — Arrival: around ${record.arrival_time}`);
-
-  return {
-    success: true,
-    token: record,
-  };
+  return allocationResult;
 }
 
 /**
@@ -901,10 +1016,11 @@ function resetTokensForTesting(sundayDate) {
 }
 
 /**
- * Invalidate in-memory schedule caches.
+ * Invalidate in-memory schedule caches. (Step 2)
  */
 function invalidateCache() {
   _lastEffectiveSchedule = null;
+  _lastEffectiveScheduleTime = 0;
   sheets.invalidateScheduleCache();
 }
 
@@ -919,6 +1035,8 @@ module.exports = {
   getTargetSundayDate,
   findNextOperatingDate,
   getTokensForSunday,
+  getTokensForDate: getTokensForSunday,
+  getBookingsForDate,
   getTokenByPhone,
   getSlotAvailability,
   allocateToken,

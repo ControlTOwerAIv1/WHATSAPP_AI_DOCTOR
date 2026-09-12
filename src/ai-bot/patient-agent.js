@@ -88,7 +88,7 @@ async function handlePatientMessage(phone, message, senderName) {
   }
 
   if (!reply) {
-    reply = "I'm sorry, I'm having a bit of trouble right now. Could you try sending your message again? 🙏";
+    reply = "I'm sorry, I'm having a bit of trouble right now. Could you try sending your message again?";
   }
 
   session.appendHistory(phone, 'assistant', reply);
@@ -97,17 +97,102 @@ async function handlePatientMessage(phone, message, senderName) {
 
 // ─── Appointment Booking Flow ───────────────────────────────────────
 
+function _detectHindi(text) {
+  if (!text) return false;
+  if (/[\u0900-\u097F]/.test(text)) return true;
+  const lower = text.toLowerCase();
+  const hindiWords = [
+    // Verbs
+    'dena', 'dijiye', 'dijiyega', 'de do', 'de', 'do', 'doge', 'dona',
+    'lena', 'lijiye', 'le do', 'le', 'lo', 'chahiye', 'chahie', 'chahye', 'mangta',
+    'karna', 'karo', 'kariye', 'kar', 'kardo', 'kar do', 'karein',
+    'hoga', 'hogi', 'honge', 'milega', 'milegi', 'milenge',
+    'batana', 'batao', 'bataiye', 'bata', 'aana', 'aao', 'aaiye',
+    'pahunch', 'chalega', 'rakhna', 'rakh',
+    // Pronouns & Possessives
+    'mera', 'meri', 'mere', 'mujhe', 'mujhko', 'humko', 'humein',
+    'apna', 'apni', 'apne', 'aapka', 'aapki', 'aapke',
+    'tera', 'teri', 'tere', 'tujhe', 'kiska', 'kisko',
+    // Time, Day & Numbers
+    'aaj', 'kal', 'parson', 'tarikh', 'tareekh', 'samay', 'waqt', 'baje',
+    'kitne', 'subah', 'subha', 'dopahar', 'shaam', 'sham', 'raat',
+    'ek', 'pehla',
+    // Nouns & Greetings
+    'naam', 'bimari', 'tabiyat', 'dawa', 'dawai', 'dost', 'bhai', 'bhaiya',
+    'ji', 'sahab', 'shukriya', 'shukria', 'dhanyawad', 'namaste', 'salaam',
+    'kripya', 'theek', 'haan', 'ha', 'nahi', 'nhi', 'mat',
+    'kyun', 'kya', 'kaise', 'kahan', 'kidhar', 'kab', 'pehle', 'baad',
+    'samajh', 'samaj', 'hai', 'hain', 'hu', 'hoon', 'tha', 'thi', 'the'
+  ];
+  return hindiWords.some(w => new RegExp(`\\b${w}\\b`, 'i').test(lower));
+}
+
+function _formatBookingConfirmation(token, isHindi) {
+  const isMorning = (token.slot_name || '').toLowerCase() === 'morning';
+  const slotDisplayEn = isMorning ? 'Morning' : 'Afternoon';
+  const slotDisplayHi = isMorning ? 'Subah / Morning' : 'Dopahar / Afternoon';
+
+  if (isHindi) {
+    return `Aapka appointment confirm ho gaya hai.
+
+Naam: ${token.patient_name}
+Token: #${token.token_number} (${slotDisplayHi})
+Samay: Lagbhag ${token.arrival_time}
+
+Kripya is samay tak clinic pahunch jayein.`;
+  }
+
+  return `Your appointment is confirmed.
+
+Name: ${token.patient_name}
+Token: #${token.token_number} (${slotDisplayEn})
+Time: Approx. ${token.arrival_time}
+
+Please arrive around this time.`;
+}
+
+function _formatDuplicateNotice(token, isHindi) {
+  const isMorning = (token.slot_name || '').toLowerCase() === 'morning';
+  const slotDisplayEn = isMorning ? 'Morning' : 'Afternoon';
+  const slotDisplayHi = isMorning ? 'Subah / Morning' : 'Dopahar / Afternoon';
+
+  if (isHindi) {
+    return `Aapka token pehle se booked hai.
+
+Naam: ${token.patient_name}
+Token: #${token.token_number} (${slotDisplayHi})
+Samay: Lagbhag ${token.arrival_time}
+
+Kripya is samay tak clinic pahunch jayein.`;
+  }
+
+  return `You already have an appointment booked.
+
+Name: ${token.patient_name}
+Token: #${token.token_number} (${slotDisplayEn})
+Time: Approx. ${token.arrival_time}
+
+Please arrive around this time.`;
+}
+
 async function _handleAppointmentBookingFlow(phone, message, sess, senderName, currentTime) {
   const targetOperatingDate = await schedule.findNextOperatingDate(currentTime);
   const existingToken = schedule.getTokenByPhone(phone, targetOperatingDate);
+  const isHindi = Boolean(sess.isHindi || _detectHindi(message));
+  if (isHindi && !sess.isHindi) {
+    session.updateSession(phone, { isHindi: true });
+  }
 
   // 1. Duplicate Request Check
   if (existingToken) {
     session.clearSession(phone);
-    return `${existingToken.patient_name}, you already have an appointment. Your ${existingToken.slot_name} token is #${existingToken.token_number}. Please try to reach the clinic around ${existingToken.arrival_time}. This is an approximate time.`;
+    return _formatDuplicateNotice(existingToken, isHindi);
   }
 
-  // 2. Extract name if available in message or session
+  // 2. Extract name if available in message or session only.
+  //    senderName (WhatsApp push name) is intentionally NOT used — the user
+  //    may be booking for a family member, so the display name is unreliable
+  //    for medical records. We always ask if no name was explicitly typed.
   let name = sess.name;
   if (!name) {
     name = _extractNameFromText(message);
@@ -124,17 +209,32 @@ async function _handleAppointmentBookingFlow(phone, message, sess, senderName, c
   // If in waiting_for_name stage
   if (sess.stage === 'booking_waiting_for_name') {
     if (!name) {
-      // Validate with Claude if plain text name was sent
-      const val = await claude.validateName(message);
-      if (val && val.valid && val.name) {
-        name = val.name;
-      } else if (message.trim().length > 1 && message.trim().split(' ').length <= 4) {
-        name = message.trim();
+      const lowerMsg = (message || '').toLowerCase().trim();
+      const nonNameWords = [
+        'samajh', 'samaj', 'nhi', 'nahi', 'kya', 'kyun', 'kaise', 'kab', 'kidhar',
+        'kaha', 'kahan', 'hello', 'hi', 'hey', 'ok', 'okay', 'thanks', 'shukriya',
+        'token', 'appointment', 'slot', 'subah', 'shaam', 'dopahar', 'time', 'date',
+        'yes', 'no', 'haan', 'ha', 'na', 'please', 'kripya', 'batao', 'batayein'
+      ];
+      const hasNonName = nonNameWords.some(w => new RegExp(`\\b${w}\\b`, 'i').test(lowerMsg));
+
+      if (!hasNonName) {
+        // Validate with Claude if plain text name was sent
+        const val = await claude.validateName(message);
+        if (val && val.valid && val.name) {
+          name = val.name;
+        } else if (!val || val.reason === 'Validation service error') {
+          if (/^[a-zA-Z\u0900-\u097F\s.'-]+$/.test(message.trim()) && message.trim().split(/\s+/).length <= 4) {
+            name = message.trim();
+          }
+        }
       }
     }
 
     if (!name) {
-      return 'May I please have your full name to proceed with booking your appointment?';
+      return isHindi
+        ? 'Token reserve karne ke liye, kripya apna pura naam batayein.'
+        : 'To reserve your token, may I please have your full name?';
     }
 
     session.updateSession(phone, { name });
@@ -148,52 +248,36 @@ async function _handleAppointmentBookingFlow(phone, message, sess, senderName, c
       session.updateSession(phone, { slotPreference: preference });
     } else {
       session.clearSession(phone);
-      return 'Understood. Please let us know if you would like to book for another clinic day.';
+      return isHindi
+        ? 'Theek hai. Agar aap kisi aur din ke liye token book karna chahein toh batayein.'
+        : 'Understood. Please let us know if you would like to book for another clinic day.';
     }
   }
 
-  // If in waiting_for_preference stage
-  if (sess.stage === 'booking_waiting_for_preference') {
-    if (!preference) {
-      preference = _extractSlotPreference(message);
-    }
-    if (!preference) {
-      // Default to morning if user just confirms
-      if (_isAffirmative(message)) {
-        preference = 'morning';
-      } else {
-        return 'Sure. Would you prefer a morning or afternoon token?';
-      }
-    }
-    session.updateSession(phone, { slotPreference: preference });
-  }
-
-  // Step A: Do we have the name?
+  // Step A: Do we have the name? If genuinely missing, ask ONLY for name (never slot preference).
   if (!name) {
     session.updateSession(phone, {
       stage: 'booking_waiting_for_name',
       slotPreference: preference,
     });
-    return 'Sure! Before I reserve that token, may I have your full name?';
+    return isHindi
+      ? 'Token reserve karne ke liye, kripya apna pura naam batayein.'
+      : 'To reserve your token, may I please have your full name?';
   }
 
-  // Step B: Do we have the time preference?
-  // If no preference stated and both slots available -> ask
+  // Step B: Slot preference - auto-allocate morning first, then afternoon based on availability.
+  // Never ask "would you prefer morning or afternoon".
   const availability = await schedule.getSlotAvailability(targetOperatingDate);
   if (!preference) {
-    if (!availability.morning.isFull && !availability.afternoon.isFull) {
-      session.updateSession(phone, {
-        stage: 'booking_waiting_for_preference',
-        name,
-      });
-      return 'Sure. Would you prefer a morning or afternoon token?';
-    } else if (!availability.morning.isFull) {
+    if (!availability.morning.isFull) {
       preference = 'morning';
     } else if (!availability.afternoon.isFull) {
       preference = 'afternoon';
     } else {
       session.clearSession(phone);
-      return `All ${availability.maxTokens} tokens for this date have already been given out.`;
+      return isHindi
+        ? `Is tareekh ke sabhi ${availability.maxTokens} tokens pehle hi diye ja chuke hain.`
+        : `All ${availability.maxTokens} tokens for this date have already been given out.`;
     }
   }
 
@@ -208,8 +292,7 @@ async function _handleAppointmentBookingFlow(phone, message, sess, senderName, c
 
   if (allocation.isDuplicate && allocation.token) {
     session.clearSession(phone);
-    const t = allocation.token;
-    return `${t.patient_name}, you already have a ${t.slot_name} token #${t.token_number}. Please try to reach the clinic around ${t.arrival_time}. This is an approximate time.`;
+    return _formatDuplicateNotice(allocation.token, isHindi);
   }
 
   if (!allocation.success) {
@@ -219,7 +302,9 @@ async function _handleAppointmentBookingFlow(phone, message, sess, senderName, c
         name,
         offeredSlot: 'afternoon',
       });
-      return 'The morning tokens are currently full. Would you like an afternoon token instead?';
+      return isHindi
+        ? 'Subah ke sabhi tokens full ho chuke hain. Kya aapko dopahar (afternoon) ka token chahiye?'
+        : 'The morning tokens are currently full. Would you like an afternoon token instead?';
     }
     if (allocation.reason === 'afternoon_full') {
       session.updateSession(phone, {
@@ -227,11 +312,15 @@ async function _handleAppointmentBookingFlow(phone, message, sess, senderName, c
         name,
         offeredSlot: 'morning',
       });
-      return 'The afternoon tokens are currently full. Would you like a morning token instead?';
+      return isHindi
+        ? 'Dopahar ke sabhi tokens full ho chuke hain. Kya aapko subah (morning) ka token chahiye?'
+        : 'The afternoon tokens are currently full. Would you like a morning token instead?';
     }
     if (allocation.reason === 'all_full') {
       session.clearSession(phone);
-      return `All tokens for this date have already been given out.`;
+      return isHindi
+        ? `Is tareekh ke sabhi tokens pehle hi diye ja chuke hain.`
+        : `All tokens for this date have already been given out.`;
     }
   }
 
@@ -239,8 +328,7 @@ async function _handleAppointmentBookingFlow(phone, message, sess, senderName, c
   const token = allocation.token;
   session.clearSession(phone);
 
-  const slotDisplay = token.slot_name.toLowerCase();
-  return `${token.patient_name}, your ${slotDisplay} token is #${token.token_number}. Please try to reach the clinic around ${token.arrival_time}. This is an approximate time.`;
+  return _formatBookingConfirmation(token, isHindi);
 }
 
 // ─── Natural Language Extraction Helpers ────────────────────────────

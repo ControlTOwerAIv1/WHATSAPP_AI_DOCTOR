@@ -114,16 +114,27 @@ async function _readWorksheet(sheetName) {
   return records;
 }
 
+// In-memory cache of confirmed worksheet titles (Step 7)
+const _knownTabs = new Set();
+
 /**
  * Ensure a specific worksheet exists in the spreadsheet. If not, creates it and seeds initial rows.
  */
 async function _ensureTabExists(title, headerRow, initialRows = []) {
+  const lowerTitle = title.toLowerCase();
+  if (_knownTabs.has(lowerTitle)) {
+    return;
+  }
+
   const sheets = _getSheetsClient();
   const meta = await sheets.spreadsheets.get({ spreadsheetId: _spreadsheetId });
   const sheetList = meta.data.sheets || [];
-  const exists = sheetList.some(s => (s.properties?.title || '').toLowerCase() === title.toLowerCase());
+  for (const s of sheetList) {
+    const t = s.properties?.title;
+    if (t) _knownTabs.add(t.toLowerCase());
+  }
 
-  if (!exists) {
+  if (!_knownTabs.has(lowerTitle)) {
     console.log(`[AI-Bot] Worksheet '${title}' not found. Creating...`);
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: _spreadsheetId,
@@ -145,6 +156,7 @@ async function _ensureTabExists(title, headerRow, initialRows = []) {
       valueInputOption: 'USER_ENTERED',
       requestBody: { values },
     });
+    _knownTabs.add(lowerTitle);
     console.log(`[AI-Bot] Worksheet '${title}' created and seeded with ${values.length} rows`);
   }
 }
@@ -469,7 +481,196 @@ async function addOverrideToSheet(override = {}) {
   }
 }
 
+const BOOKINGS_HEADERS = [
+  'booking_ref',
+  'slot_id',
+  'patient_name',
+  'patient_phone',
+  'condition',
+  'booked_at',
+];
+
+const SYNC_FAILURES_PATH = path.join(process.cwd(), 'data', 'sync_failures.json');
+
+function _recordSyncFailure(failure) {
+  try {
+    const dir = path.dirname(SYNC_FAILURES_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    let failures = [];
+    if (fs.existsSync(SYNC_FAILURES_PATH)) {
+      try {
+        failures = JSON.parse(fs.readFileSync(SYNC_FAILURES_PATH, 'utf8')) || [];
+      } catch (e) {
+        failures = [];
+      }
+    }
+    failures.push(failure);
+    fs.writeFileSync(SYNC_FAILURES_PATH, JSON.stringify(failures, null, 2), 'utf8');
+  } catch (e) {
+    console.error('[AI-Bot] Could not write to sync_failures.json:', e.message);
+  }
+}
+
 /**
+ * Ensure the bookings worksheet exists and is seeded with headers.
+ */
+async function ensureBookingsTabExists() {
+  await _ensureTabExists('bookings', BOOKINGS_HEADERS);
+}
+
+/**
+ * Retry delay schedule for exponential backoff (in ms).
+ * 3 retry attempts: 1s, 5s, 15s after the initial attempt fails.
+ */
+const RETRY_DELAYS_MS = [1000, 5000, 15000];
+
+/**
+ * Append a booking to the 'bookings' tab in Google Sheets.
+ * Fire-and-forget sync after SQLite token allocation.
+ * Uses RAW valueInputOption to prevent formula parsing of phone numbers.
+ * Retries with exponential backoff (3 attempts: 1s, 5s, 15s);
+ * writes to sync_failures.json on persistent error.
+ *
+ * @param {Object} booking
+ * @param {string} booking.booking_ref
+ * @param {string} booking.slot_id
+ * @param {string} booking.patient_name
+ * @param {string} booking.patient_phone
+ * @param {string} [booking.condition]
+ * @param {string} [booking.booked_at]
+ * @returns {Promise<{ success: boolean, error?: string }>}
+ */
+async function appendBookingToSheet(booking) {
+  const rowValues = [
+    booking.booking_ref || '',
+    booking.slot_id || '',
+    booking.patient_name || '',
+    booking.patient_phone || '',
+    booking.condition || '',
+    booking.booked_at || getCurrentTime().toISOString().replace('T', ' ').substring(0, 19),
+  ];
+
+  const doAppend = async () => {
+    await ensureBookingsTabExists();
+    const sheets = _getSheetsClient();
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: _spreadsheetId,
+      range: 'bookings',
+      valueInputOption: 'RAW',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: {
+        values: [rowValues],
+      },
+    });
+  };
+
+  // Initial attempt + up to 3 retries with exponential backoff
+  let lastError = null;
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      await doAppend();
+      const label = attempt === 0 ? '' : ` (retry #${attempt})`;
+      console.log(`[AI-Bot] 📊 Booking synced to Google Sheets${label}: ${booking.booking_ref} (${booking.patient_name})`);
+      return { success: true };
+    } catch (err) {
+      lastError = err;
+      if (attempt < RETRY_DELAYS_MS.length) {
+        const delay = RETRY_DELAYS_MS[attempt];
+        console.warn(`[AI-Bot] ⚠️ Sheets sync attempt ${attempt + 1} failed (${err.message}), retrying in ${delay / 1000}s...`);
+        await new Promise(res => setTimeout(res, delay));
+      }
+    }
+  }
+
+  // All attempts exhausted
+  console.error(`[AI-Bot] ❌ Failed to sync booking to Google Sheets after ${RETRY_DELAYS_MS.length + 1} attempts: ${lastError.message}`);
+  _recordSyncFailure({
+    type: 'booking_sync',
+    booking,
+    error: lastError.message,
+    failed_at: new Date().toISOString(),
+  });
+  return { success: false, error: lastError.message };
+}
+
+/**
+ * Background job: periodically re-attempts any bookings still sitting in sync_failures.json.
+ * Runs every `intervalMs` milliseconds. Successfully synced entries are removed from the file.
+ *
+ * @param {number} [intervalMs=60000] - How often to check (default 60s)
+ * @returns {NodeJS.Timeout} The interval handle (for cleanup/testing)
+ */
+function startSyncFailureProcessor(intervalMs = 60000) {
+  const handle = setInterval(async () => {
+    let failures;
+    try {
+      if (!fs.existsSync(SYNC_FAILURES_PATH)) return;
+      const raw = fs.readFileSync(SYNC_FAILURES_PATH, 'utf8').trim();
+      if (!raw || raw === '[]') return;
+      failures = JSON.parse(raw);
+      if (!Array.isArray(failures) || failures.length === 0) return;
+    } catch (e) {
+      return; // File unreadable or empty — nothing to do
+    }
+
+    console.log(`[AI-Bot] 🔁 Sync failure processor: found ${failures.length} pending failure(s), re-attempting...`);
+    const remaining = [];
+
+    for (const entry of failures) {
+      if (entry.type !== 'booking_sync' || !entry.booking) {
+        remaining.push(entry); // Unknown type — keep it
+        continue;
+      }
+      try {
+        await ensureBookingsTabExists();
+        const sheets = _getSheetsClient();
+        const b = entry.booking;
+        const rowValues = [
+          b.booking_ref || '',
+          b.slot_id || '',
+          b.patient_name || '',
+          b.patient_phone || '',
+          b.condition || '',
+          b.booked_at || '',
+        ];
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: _spreadsheetId,
+          range: 'bookings',
+          valueInputOption: 'RAW',
+          insertDataOption: 'INSERT_ROWS',
+          requestBody: { values: [rowValues] },
+        });
+        console.log(`[AI-Bot] ✅ Re-synced failed booking: ${b.booking_ref}`);
+      } catch (err) {
+        console.warn(`[AI-Bot] ⚠️ Re-sync still failing for ${entry.booking.booking_ref}: ${err.message}`);
+        entry.last_retry_at = new Date().toISOString();
+        entry.retry_error = err.message;
+        remaining.push(entry);
+      }
+    }
+
+    // Rewrite the failures file with only the still-failing entries
+    try {
+      fs.writeFileSync(SYNC_FAILURES_PATH, JSON.stringify(remaining, null, 2), 'utf8');
+      if (remaining.length === 0) {
+        console.log('[AI-Bot] ✅ All sync failures resolved!');
+      } else {
+        console.log(`[AI-Bot] ${remaining.length} sync failure(s) still pending.`);
+      }
+    } catch (e) {
+      console.error('[AI-Bot] Could not update sync_failures.json:', e.message);
+    }
+  }, intervalMs);
+
+  console.log(`[AI-Bot] 🔁 Sync failure processor started (interval: ${intervalMs / 1000}s)`);
+  return handle;
+}
+
+/**
+ * @deprecated LEGACY CODE - Dead code.
+ * Replaced by schedule.getSlotAvailability() which calculates capacity dynamically
+ * from Settings/Overrides and counts tokens in SQLite. Do not use for new code.
+ *
  * Get available appointment slots (status === 'open', date >= today).
  * Results are cached for 30 seconds.
  * @returns {Array<Object>}
@@ -501,6 +702,10 @@ async function getAvailableSlots() {
 }
 
 /**
+ * @deprecated LEGACY CODE - Dead code.
+ * Replaced by schedule.allocateToken() which assigns atomic sequential tokens
+ * in SQLite. Do not use for active WhatsApp booking flow.
+ *
  * Book a slot by ID.
  *
  * 1. Re-reads the exact row (never trusts cache).
@@ -590,27 +795,21 @@ async function bookSlot(slotId, patientName, patientPhone, condition) {
 
 /**
  * Get bookings for a specific doctor (by name) for today.
+ * Reads directly from the synced 'bookings' worksheet.
  * @param {string} doctorName
  * @returns {Array<Object>}
  */
 async function getDoctorBookings(doctorName) {
   try {
     const allBookings = await _readWorksheet('bookings');
-    const allSlots = await _readWorksheet('availability');
-
     const todayStr = getCurrentTime().toISOString().split('T')[0];
 
-    // Find slot IDs for this doctor that are booked today
-    const doctorSlotIds = allSlots
-      .filter(s =>
-        (s.doctor_name || '').toLowerCase().includes(doctorName.toLowerCase()) &&
-        (s.status || '').toLowerCase() === 'booked' &&
-        (s.date || '') === todayStr
-      )
-      .map(s => s.slot_id);
-
-    // Find matching bookings
-    return allBookings.filter(b => doctorSlotIds.includes(b.slot_id));
+    // Filter bookings matching today's date (by booked_at or slot_id containing today's date)
+    return allBookings.filter(b => {
+      const bookedDate = (b.booked_at || '').substring(0, 10);
+      const slotDate = (b.slot_id || '').substring(0, 10);
+      return bookedDate === todayStr || slotDate === todayStr;
+    });
   } catch (err) {
     console.error('[AI-Bot] Failed to fetch doctor bookings:', err.message);
     return [];
@@ -639,6 +838,9 @@ async function getDoctorSchedule(doctorName) {
 
 module.exports = {
   ensureSettingsAndOverridesTabs,
+  ensureBookingsTabExists,
+  appendBookingToSheet,
+  startSyncFailureProcessor,
   getSettingsFromSheet,
   getOverridesFromSheet,
   updateSettingsInSheet,
@@ -648,4 +850,6 @@ module.exports = {
   bookSlot,
   getDoctorBookings,
   getDoctorSchedule,
+  _getSheetsClient,
+  _readWorksheet,
 };

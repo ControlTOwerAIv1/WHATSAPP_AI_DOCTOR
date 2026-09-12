@@ -149,28 +149,99 @@ CRITICAL: Output ONLY the single word: confirm, cancel, or other.`;
 }
 
 /**
- * Classify admin message intent as QUERY or COMMAND.
+ * Helper to deterministically resolve relative date phrases against a reference date. (Step 8)
+ *
+ * @param {string} phrase - e.g. "today", "tomorrow", "this Sunday", "next Wednesday", "this weekend"
+ * @param {string} refDateISO - e.g. "2026-08-26T12:00:00"
+ * @returns {string|null} - YYYY-MM-DD
+ */
+function resolveRelativeDate(phrase, refDateISO) {
+  if (!phrase) return null;
+  const ref = new Date(refDateISO);
+  if (isNaN(ref.getTime())) return null;
+
+  const lower = phrase.toLowerCase().trim();
+
+  // If already a valid YYYY-MM-DD
+  const directIso = lower.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  if (directIso) return directIso[1];
+
+  const format = (d) => {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  const dayOfWeek = ref.getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+
+  if (lower.includes('today')) {
+    return format(ref);
+  }
+  if (lower.includes('tomorrow')) {
+    const d = new Date(ref);
+    d.setDate(d.getDate() + 1);
+    return format(d);
+  }
+  if (lower.includes('this weekend')) {
+    // Upcoming weekend day (defaulting to Sunday)
+    const daysUntilSunday = (7 - dayOfWeek) % 7 || 7;
+    const d = new Date(ref);
+    d.setDate(d.getDate() + daysUntilSunday);
+    return format(d);
+  }
+
+  const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  for (let targetDayIdx = 0; targetDayIdx < 7; targetDayIdx++) {
+    const dayName = days[targetDayIdx];
+    if (lower.includes(dayName)) {
+      const isNext = lower.includes(`next ${dayName}`);
+      let diff = (targetDayIdx - dayOfWeek + 7) % 7;
+      if (diff === 0 && isNext) {
+        diff = 7;
+      } else if (diff === 0 && !lower.includes(`this ${dayName}`)) {
+        // e.g. "Wednesday" said on Wednesday could refer to next week if afternoon/past
+        diff = 7;
+      }
+      const d = new Date(ref);
+      d.setDate(d.getDate() + diff);
+      return format(d);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Classify admin message intent as QUERY or COMMAND using semantic tone understanding (Step 9).
+ * Does NOT rely on specific trigger words.
  * @param {string} message
  * @returns {Promise<'QUERY'|'COMMAND'>}
  */
 async function classifyAdminIntent(message) {
-  const prompt = `You are an AI assistant evaluating a WhatsApp message from the Clinic Admin.
+  const prompt = `You are an expert AI assistant evaluating a WhatsApp message from a Doctor or Clinic Administrator.
 
-Classify if this message is a QUERY (asking for information about schedule, timings, doctors, or tokens without changing anything) or a COMMAND (asking to change, add, override, or update schedule, timings, open days, capacity, or tokens).
+Classify if this message is a QUERY (asking for information about schedule, timings, workload, or tokens without changing anything) or a COMMAND (giving an instruction, stating absence, closing clinic, adjusting capacity, or updating schedule).
+
+CRITICAL: Rely on the semantic meaning and intent, NOT on specific trigger keywords.
+- A doctor saying "what's left for today", "hey how many people am I seeing", or "any slots open right now" is asking for status -> QUERY.
+- A doctor saying "not going to be in today", "skip today, I'm out", or "let's not take anyone this afternoon" is giving an operational instruction / stating absence -> COMMAND.
 
 Examples of QUERY:
 - "what time do we open Sunday"
-- "what are Sunday's timings"
+- "what's left for today"
+- "hey how many people am I seeing"
+- "any slots open right now"
 - "how many tokens are configured"
 - "are we open this week"
-- "kya timings hain Sunday ki"
 
 Examples of COMMAND:
+- "not going to be in today"
+- "skip today, I'm out"
+- "let's not take anyone this afternoon"
 - "we're open next Wednesday instead, tokens from Tuesday 9pm"
-- "change max tokens to 50 permanently"
 - "close the clinic on Sunday August 30"
-- "open tomorrow with 30 tokens"
-- "increase morning cap to 20 permanently"
+- "change max tokens to 50 permanently"
 
 Message: "${message}"
 
@@ -184,18 +255,111 @@ CRITICAL: Output ONLY the single word: QUERY or COMMAND.`;
 }
 
 /**
+ * Semantically classify an admin/doctor query into one of three categories:
+ * - DOCTOR_BOOKINGS: Queries about patient appointments, tokens issued, names, details, conditions, who is booked, or patient schedule for a date.
+ * - CLINIC_CONFIG: Queries about operational rules, operating hours, break times, booking window hours, or clinic policies.
+ * - CLINIC_CAPACITY: Queries about macro capacity, remaining token counts, or clinic-wide numbers (admin metrics, not patient details).
+ *
+ * @param {string} message
+ * @returns {Promise<'DOCTOR_BOOKINGS'|'CLINIC_CONFIG'|'CLINIC_CAPACITY'>}
+ */
+async function classifyAdminQueryType(message) {
+  const prompt = `You are an expert AI assistant evaluating a query sent by a Doctor or Clinic Administrator.
+
+Classify this query into EXACTLY ONE of three categories based on the user's semantic intent:
+
+1. DOCTOR_BOOKINGS:
+The user is asking about patient appointments, tokens issued, names, medical details/conditions, patient arrival times, who is booked, or patient schedule for a particular day.
+Examples:
+- "Gimme the list of all the token given for this Sunday along with the names and details"
+- "who is booked to see me today"
+- "list all the patients coming tomorrow"
+- "how many patients do I have and what are their names"
+- "give me the token details for Sunday"
+- "show my patient roster"
+- "pull up patient files for today"
+
+2. CLINIC_CONFIG:
+The user is asking about the clinic's operating policies, configuration, operating hours, consultation start/end times, lunch break timings, booking window start/end time, or general settings rules.
+Examples:
+- "what are our operating hours"
+- "what time does the clinic open"
+- "when is the lunch break scheduled"
+- "when does the booking window open for patients"
+- "what are the configured clinic timings"
+
+3. CLINIC_CAPACITY:
+The user is asking for aggregate/macro token numbers, capacity limits, or remaining slot counts across the clinic without requesting individual patient names or details.
+Examples:
+- "how many tokens left this week"
+- "what is our total token capacity"
+- "is the morning session completely full"
+- "how many tokens are still available for Sunday"
+- "what's our overall remaining capacity"
+
+Message: "${message}"
+
+CRITICAL: Output ONLY the category name: DOCTOR_BOOKINGS, CLINIC_CONFIG, or CLINIC_CAPACITY.`;
+
+  const result = await chat('', prompt, { temperature: 0, maxTokens: 25 });
+  if (!result) return 'DOCTOR_BOOKINGS';
+
+  const cleaned = result.toUpperCase().trim();
+  if (cleaned.includes('CLINIC_CONFIG')) return 'CLINIC_CONFIG';
+  if (cleaned.includes('CLINIC_CAPACITY')) return 'CLINIC_CAPACITY';
+  return 'DOCTOR_BOOKINGS';
+}
+
+/**
  * Parse an admin COMMAND into structured mutation details.
  * Determines if it's PERMANENT (Settings tab) or ONE-OFF (Overrides tab, default).
+ * Resolves relative date phrases against the current reference date/time. (Step 8)
  *
  * @param {string} message
  * @param {Object} currentSettings
- * @param {string} currentDateTimeISO - e.g. "2026-08-26T16:00:00"
+ * @param {string} currentDateTimeISO - e.g. "2026-08-26T12:00:00"
  * @returns {Promise<Object>}
  */
 async function parseAdminCommand(message, currentSettings, currentDateTimeISO) {
-  const prompt = `You are a clinical administrative AI parsing a schedule change command from the clinic admin.
+  const refDate = new Date(currentDateTimeISO);
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const refDayName = dayNames[refDate.getDay()] || '';
 
-Current Reference Date/Time: ${currentDateTimeISO}
+  const format = (d) => {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  const todayStr = format(refDate);
+  const tomorrowObj = new Date(refDate);
+  tomorrowObj.setDate(tomorrowObj.getDate() + 1);
+  const tomorrowStr = format(tomorrowObj);
+  const upcomingSundayStr = schedule.getTargetSundayDate(refDate);
+
+  // Next regular operating clinic date (default Sunday)
+  let nextOperatingDateStr = upcomingSundayStr;
+  try {
+    const candidate = await schedule.findNextOperatingDate(refDate);
+    if (candidate && candidate >= todayStr) {
+      nextOperatingDateStr = candidate;
+    }
+  } catch (err) {
+    // fallback to upcomingSundayStr
+  }
+
+  // Pre-resolve any relative date phrase mentioned in message (e.g. "next Wednesday", "tomorrow")
+  const relativeDateMentioned = resolveRelativeDate(message, currentDateTimeISO);
+
+  const prompt = `You are a clinical administrative AI parsing a schedule change command from the clinic admin or doctor.
+
+Current Reference Date/Time: ${currentDateTimeISO} (${refDayName})
+Reference Date (Today) is: ${todayStr}
+Tomorrow is: ${tomorrowStr}
+Upcoming Sunday (Primary Clinic Day) is: ${upcomingSundayStr}
+Next Scheduled Operating Clinic Date is: ${nextOperatingDateStr}
+${relativeDateMentioned ? `Calendar-accurate resolved date for mentioned day is: ${relativeDateMentioned}\n` : ''}
 Current Settings in Settings Tab:
 ${JSON.stringify(currentSettings, null, 2)}
 
@@ -204,13 +368,40 @@ Instructions:
    - DEFAULT to ONE-OFF (Overrides tab) unless the admin explicitly says "permanently", "every week now", "from now on", "all future", or similar permanent wording.
 2. If ONE-OFF:
    - target_tab: "Overrides"
-   - target_date: Calculate target date in YYYY-MM-DD format based on reference date. (e.g. "next Wednesday" relative to reference date ${currentDateTimeISO}).
+   
+   CRITICAL SEMANTIC RULE FOR target_date:
+   - The "target_date" is ALWAYS the date of the CLINIC CONSULTATION (the date patients visit the clinic and see the doctor), NEVER the date or time when bookings open.
+   - The "booking_opens_at" field specifies WHEN patients can start booking (e.g. "Saturday 20:30", "Tuesday 21:00", etc.).
+   
+   A. Booking Window / Booking Opening Commands:
+   If the admin/doctor says:
+   - "Start taking appointments from 12th 20:30 pm"
+   - "Start taking appointments from 8:30 PM today"
+   - "Open booking early at 20:30"
+   - "Start accepting bookings from today at 20:30"
+   - "Open bookings from 12th at 8:30 PM"
+   In all these cases, the admin is changing WHEN bookings open for the upcoming clinic session (${nextOperatingDateStr}).
+   Therefore:
+   - target_date: MUST be "${nextOperatingDateStr}" (the upcoming clinic consultation day, e.g. Sunday), NOT the booking day (${todayStr})!
+   - booking_opens_at: "${refDayName} 20:30" (or the specified day and time).
+   - type: "capacity_change" (or "open_extra_day" if that clinic day wasn't previously open).
+   - confirmation_prompt: Clearly explain that bookings for ${nextOperatingDateStr} (upcoming clinic) will open at the specified time, specifying that it will write a row to the **Overrides** tab, and asking "Should I proceed? Reply 'yes' to confirm."
+
+   B. Clinic Operating / Closure / Capacity Commands:
+   Calculate target_date based on the consultation day mentioned:
+   - "today" -> "${todayStr}" (ONLY if doctor is closing today or opening clinic today)
+   - "tomorrow" -> "${tomorrowStr}"
+   - "this Sunday" -> "${upcomingSundayStr}"
+   - "this weekend" -> "${upcomingSundayStr}"
+   - "next Wednesday" -> "${relativeDateMentioned || 'calculate upcoming Wednesday'}"
    - type: "open_extra_day", "closed", or "capacity_change"
+     - If the doctor says they are not coming in ("not going to be in today", "skip today, I'm out", "close today"), type is "closed".
+     - If the doctor or admin says not to take anyone in afternoon or change tokens, type is "capacity_change" or "closed".
    - booking_opens_at: e.g. "Tuesday 9:00 PM" or "Tuesday 21:00" or as specified.
    - consultation_start: e.g. "11:00" or as specified.
    - consultation_end: e.g. "18:30" or as specified.
    - token_cap: Number or null
-   - notes: Short description of the override.
+   - notes: Short description of the override (e.g. "Doctor unavailable", "Clinic closed", "Early booking opening", etc.)
    - confirmation_prompt: Plain-language summary explaining what will change, specifying that it will write a row to the **Overrides** tab, and asking "Should I proceed? Reply 'yes' to confirm."
 3. If PERMANENT:
    - target_tab: "Settings"
@@ -243,7 +434,34 @@ Return ONLY valid JSON matching this schema:
 
   try {
     const cleaned = result.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    return JSON.parse(cleaned);
+    const parsed = JSON.parse(cleaned);
+
+    // Fallback validation: ensure target_date is formatted YYYY-MM-DD and matches calendar
+    if (parsed.target_tab === 'Overrides' && parsed.override_data) {
+      const lowerMsg = message.toLowerCase();
+      const isBookingWindowCmd =
+        lowerMsg.includes('start taking appointment') ||
+        lowerMsg.includes('open booking') ||
+        lowerMsg.includes('bookings open') ||
+        lowerMsg.includes('booking opens') ||
+        lowerMsg.includes('start booking') ||
+        lowerMsg.includes('accept appointment') ||
+        lowerMsg.includes('accepting appointment');
+
+      if (!isBookingWindowCmd && relativeDateMentioned) {
+        parsed.override_data.target_date = relativeDateMentioned;
+      } else {
+        const rawTarget = parsed.override_data.target_date;
+        if (!rawTarget || !/^\d{4}-\d{2}-\d{2}$/.test(rawTarget)) {
+          const resolved = resolveRelativeDate(rawTarget || message, currentDateTimeISO);
+          if (resolved) {
+            parsed.override_data.target_date = resolved;
+          }
+        }
+      }
+    }
+
+    return parsed;
   } catch (err) {
     console.error('[AI-Bot] Failed to parse admin command JSON:', err.message);
     return null;
@@ -336,9 +554,11 @@ module.exports = {
   chatWithHistory,
   classifyIntent,
   classifyAdminIntent,
+  classifyAdminQueryType,
   classifyAdminConfirmation,
   parseAdminCommand,
   answerAdminQuery,
+  resolveRelativeDate,
   validateName,
   validateCondition,
   getAppointmentSystemPrompt,

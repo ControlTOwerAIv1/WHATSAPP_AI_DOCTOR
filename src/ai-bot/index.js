@@ -20,6 +20,7 @@ const patientAgent = require('./patient-agent');
 const doctorAgent = require('./doctor-agent');
 const adminAgent = require('./admin-agent');
 const sessionStore = require('./session');
+const sheets = require('./sheets');
 
 let _sock = null;
 let _stores = null;
@@ -51,6 +52,9 @@ function init({ rootDir }) {
 
   // Periodic session cleanup (every 10 minutes)
   setInterval(() => sessionStore.cleanupExpiredSessions(), 10 * 60 * 1000);
+
+  // Background job: re-attempt any failed Sheets syncs every 60 seconds
+  sheets.startSyncFailureProcessor(60000);
 
   console.log('[AI-Bot] ✅ AI Bot initialized and ready');
 }
@@ -212,7 +216,7 @@ async function handleIncomingMessage(parsed) {
     try {
       const jid = parsed.jid || parsed.from;
       if (jid && _sock) {
-        const errorText = 'I\'m sorry, I\'m experiencing a technical issue. Please try again in a moment. 🙏';
+        const errorText = 'I\'m sorry, I\'m experiencing a technical issue. Please try again in a moment.';
         const fallbackSent = await _sock.sendMessage(jid, {
           text: errorText,
         });
