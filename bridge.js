@@ -29,6 +29,8 @@ const { RelayDatabase } = require('./src/db');
 const stores = require('./src/stores');
 const whatsapp = require('./src/cloudapi');
 const { registerRoutes } = require('./src/routes');
+const backup = require('./src/backup');
+const cookieParser = require('cookie-parser');
 
 const app = express();
 const httpServer = createServer(app);
@@ -38,7 +40,24 @@ const io = new Server(httpServer, {
 });
 
 app.use(cors());
+
+// Capture raw body for HMAC signature verification (Part 3 — webhook hardening)
+// Must be registered BEFORE express.json() so raw bytes are preserved.
+app.use((req, res, next) => {
+  if (req.path === '/webhook' && req.method === 'POST') {
+    let chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => {
+      req.rawBody = Buffer.concat(chunks);
+      try { req.body = JSON.parse(req.rawBody.toString('utf8')); } catch (_) { req.body = {}; }
+      next();
+    });
+  } else {
+    next();
+  }
+});
 app.use(express.json());
+app.use(cookieParser());
 
 // Serve the operator dashboard (and its css/js) from public/.
 const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
@@ -115,6 +134,8 @@ try {
     console.log(`Webhook URL:   http://<YOUR_DOMAIN_OR_IP>:${PORT}/webhook`);
     console.log('========================================\n');
     whatsapp.connectToWhatsApp();
+    // Start nightly SQLite backup job
+    backup.start();
   });
 
   httpServer.on('error', (err) => {

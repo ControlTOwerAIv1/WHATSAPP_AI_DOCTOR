@@ -2,20 +2,19 @@
  * AI Bot — Schedule Engine & Token Management
  *
  * Responsibilities:
- * 1. Reads clinic schedule settings & one-off overrides from Google Sheets (via sheets.js)
- *    with 60-second in-memory TTL caching.
+ * 1. Reads clinic schedule settings & one-off overrides from SQLite (via store.js) — no caching.
  * 2. Provides getEffectiveSchedule(date) to resolve date overrides or fall back to Settings.
  * 3. Renders prompt templates with dynamic placeholders from the effective schedule.
  * 4. Provides isBookingWindowOpen() using the centralized clock and effective schedule.
  * 5. Dynamically calculates approximate patient arrival times (computeArrivalTime).
- * 6. Manages durable token allocation (persisted to SQLite & JSON storage).
+ * 6. Manages durable token allocation (persisted to SQLite).
  */
 
 const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const { getCurrentTime } = require('./clock');
-const sheets = require('./sheets');
+const store = require('./store');
 
 // ─── Prompt Template Finder ──────────────────────────────────────────
 
@@ -103,10 +102,10 @@ function parseBookingOpenString(str, targetDayName = 'Sunday') {
 }
 
 // ─── Effective Schedule Resolver (Settings + Overrides) ─────────────
+// Note: SQLite reads are fast; no TTL cache is needed or used here.
 
 let _lastEffectiveSchedule = null;
 let _lastEffectiveScheduleTime = 0;
-const EFFECTIVE_SCHEDULE_TTL_MS = 60 * 1000; // 60 seconds TTL
 
 function _setLastEffectiveSchedule(sched) {
   _lastEffectiveSchedule = sched;
@@ -151,9 +150,9 @@ async function getEffectiveSchedule(date = null) {
   const dayOfWeekIndex = targetDateObj.getDay();
   const dayOfWeekName = DAY_NAMES[dayOfWeekIndex];
 
-  // Fetch Settings and Overrides from Google Sheets (cached 60s)
-  const settings = await sheets.getSettingsFromSheet();
-  const overrides = await sheets.getOverridesFromSheet();
+  // Fetch Settings and Overrides directly from SQLite (no caching needed)
+  const settings = store.getSettings();
+  const overrides = store.getOverrides();
 
   // 1. Check for matching override (use the most recently added override if multiple exist for the same date)
   const matchingOverride = overrides.slice().reverse().find(o => (o.target_date || '').trim() === targetDateStr);
@@ -329,11 +328,12 @@ async function getEffectiveSchedule(date = null) {
 }
 
 /**
- * Synchronously get the effective schedule using the in-memory cache or default settings.
- * Enforces 60-second TTL to avoid returning stale cached schedule data indefinitely.
+ * Synchronously get the effective schedule using the last computed value or default settings.
+ * The schedule is refreshed on every async call to getEffectiveSchedule(); this sync
+ * variant is a prompt-render convenience that reads the most-recently-resolved value.
  */
 function getEffectiveScheduleSync(date = null) {
-  const isFresh = _lastEffectiveSchedule && (Date.now() - _lastEffectiveScheduleTime < EFFECTIVE_SCHEDULE_TTL_MS);
+  const isFresh = Boolean(_lastEffectiveSchedule);
   if (isFresh) {
     if (!date || _lastEffectiveSchedule.target_date === (typeof date === 'string' ? date : formatDateToYYYYMMDD(date))) {
       return _lastEffectiveSchedule;
@@ -451,7 +451,7 @@ function _checkWindowOpenForSchedule(currentTime, config) {
  */
 async function findNextOperatingDate(currentTime = getCurrentTime()) {
   const currentYYYYMMDD = formatDateToYYYYMMDD(currentTime);
-  const overrides = await sheets.getOverridesFromSheet();
+  const overrides = store.getOverrides();
 
   // Deduplicate overrides by target_date (last row in sheet takes precedence)
   const latestOverridesByDate = new Map();
@@ -958,34 +958,9 @@ async function allocateToken({ phone, name, slotPreference = 'morning', conditio
     allocationResult = { success: true, token: record };
   }
 
-  // Secondary actions after transaction commits
+  // Log on success
   if (allocationResult.success && !allocationResult.isDuplicate && allocationResult.token) {
     const record = allocationResult.token;
-
-    // 1. JSON secondary backup
-    try {
-      const dir = path.dirname(TOKENS_JSON_PATH);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      const existing = _loadTokensFromDisk();
-      const updated = existing.filter(r => !(r.sunday_date === record.sunday_date && r.token_number === record.token_number));
-      updated.push(record);
-      fs.writeFileSync(TOKENS_JSON_PATH, JSON.stringify(updated, null, 2), 'utf8');
-    } catch (err) {
-      console.warn('[AI-Bot] JSON token save error:', err.message);
-    }
-
-    // 2. Fire-and-forget sync to Google Sheets (Step 3)
-    sheets.appendBookingToSheet({
-      booking_ref: `TKN-${record.token_number}`,
-      slot_id: `${record.sunday_date}-${record.slot_name}-${record.token_in_slot}`,
-      patient_name: record.patient_name,
-      patient_phone: record.patient_phone,
-      condition: record.condition,
-      booked_at: record.booked_at,
-    }).catch(err => {
-      console.error('[AI-Bot] Fire-and-forget Sheets sync error:', err.message);
-    });
-
     console.log(`[AI-Bot] ✅ Token allocated: #${record.token_number} (${record.slot_name}) for ${record.patient_name} (${record.patient_phone}) on ${effectiveTargetDate} — Arrival: around ${record.arrival_time}`);
   }
 
@@ -1016,12 +991,13 @@ function resetTokensForTesting(sundayDate) {
 }
 
 /**
- * Invalidate in-memory schedule caches. (Step 2)
+ * Invalidate in-memory schedule cache.
+ * SQLite is always current so only the in-process _lastEffectiveSchedule needs clearing.
  */
 function invalidateCache() {
   _lastEffectiveSchedule = null;
   _lastEffectiveScheduleTime = 0;
-  sheets.invalidateScheduleCache();
+  console.log('[AI-Bot] Schedule cache invalidated');
 }
 
 module.exports = {

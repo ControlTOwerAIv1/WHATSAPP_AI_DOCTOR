@@ -26,5 +26,7 @@ jobs:
             git fetch origin master
             git reset --hard origin/master
             npm install --production
+            pip3 install --quiet faster-whisper
             pm2 startOrReload ecosystem.config.js --only echo
+            pm2 startOrReload ecosystem.config.js --only whisper
             pm2 save

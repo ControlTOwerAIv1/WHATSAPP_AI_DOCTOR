@@ -10,7 +10,6 @@
  */
 
 const claude = require('./claude');
-const sheets = require('./sheets');
 const session = require('./session');
 const schedule = require('./schedule');
 const { getCurrentTime } = require('./clock');
@@ -18,7 +17,7 @@ const { getCurrentTime } = require('./clock');
 const DOCTOR_SYSTEM = `You are an AI assistant for doctors at Dr. AI Clinic. You are speaking with a registered doctor.
 
 Your capabilities:
-- You have live access to the clinic's Google Sheet schedule and appointments.
+- You have live access to the clinic's appointment schedule and bookings database.
 - Show the doctor their today's appointments and upcoming schedule.
 - Provide patient details for upcoming appointments.
 - Answer questions about their schedule.
@@ -179,43 +178,6 @@ async function _showUpcomingSchedule(doctorInfo) {
   }
 
   return reply;
-}
-
-async function _handleDoctorChat(phone, message, doctorInfo) {
-  // Fetch schedule data for context
-  let scheduleContext = '';
-  try {
-    const schedule = await sheets.getDoctorSchedule(doctorInfo.name);
-    const bookings = await sheets.getDoctorBookings(doctorInfo.name);
-
-    if (schedule.length > 0) {
-      scheduleContext = '\nYour upcoming slots:\n' +
-        schedule.slice(0, 10).map(s =>
-          `- ${s.date} ${s.start_time}-${s.end_time}: ${s.status}`
-        ).join('\n');
-    }
-    if (bookings.length > 0) {
-      scheduleContext += '\n\nToday\'s bookings:\n' +
-        bookings.map(b =>
-          `- ${b.patient_name} (${b.condition}) - Ref: ${b.booking_ref}`
-        ).join('\n');
-    }
-  } catch (e) {
-    // ignore
-  }
-
-  const history = session.getHistory(phone, 6);
-  const historyText = history.length > 0
-    ? history.map(m => `${m.role === 'user' ? 'Doctor' : 'Assistant'}: ${m.content}`).join('\n')
-    : '';
-
-  const systemPrompt = DOCTOR_SYSTEM
-    .replace('{doctor_name}', doctorInfo.name)
-    .replace('{specialty}', doctorInfo.specialty);
-
-  const userPrompt = `${historyText ? `Recent conversation:\n${historyText}\n\n` : ''}${scheduleContext ? `Schedule context:${scheduleContext}\n\n` : ''}Doctor's message: ${message}`;
-
-  return await claude.chat(systemPrompt, userPrompt);
 }
 
 module.exports = {

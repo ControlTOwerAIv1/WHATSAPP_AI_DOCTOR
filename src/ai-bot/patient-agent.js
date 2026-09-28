@@ -48,9 +48,11 @@ async function handlePatientMessage(phone, message, senderName) {
   if (stage && stage.startsWith('booking_')) {
     isAppointmentIntent = true;
   } else {
-    // Quick regex heuristic for common appointment / token phrases
+    // Quick regex heuristic for common appointment / token phrases (Latin and Devanagari)
     const tokenRegex = /\b(token|appointment|slot|subah|morning|afternoon|shaam|naam likh|book)\b/i;
-    const hindiUrduToken = lower.includes('token') || lower.includes('chahiye') || lower.includes('de do') || lower.includes('milega');
+    const hindiUrduToken = lower.includes('token') || lower.includes('chahiye') || lower.includes('de do') || lower.includes('milega') ||
+      lower.includes('तोकन') || lower.includes('टोकन') || lower.includes('चाहिए') || lower.includes('चाही') || lower.includes('जाही') ||
+      lower.includes('अपॉइंटमेंट') || lower.includes('अपोइंटमेंट') || lower.includes('स्लॉट');
 
     if (tokenRegex.test(message) || hindiUrduToken) {
       isAppointmentIntent = true;
@@ -76,14 +78,22 @@ async function handlePatientMessage(phone, message, senderName) {
     // Booking window is OPEN
     reply = await _handleAppointmentBookingFlow(phone, message, sess, senderName, currentTime);
   } else {
-    // Non-appointment flow
-    const intent = await claude.classifyIntent(message, stage);
-    if (intent === 'clinical_question') {
-      reply = await _handleClinicalQuestion(phone, message);
-    } else if (intent === 'medicine') {
-      reply = await _handleMedicineQuery(phone, message);
+    // Non-appointment flow — check if patient has an existing booking
+    const targetDate = await schedule.findNextOperatingDate(currentTime);
+    const existingToken = schedule.getTokenByPhone(phone, targetDate);
+
+    if (existingToken) {
+      // Patient has a booking — only answer from real booking data
+      reply = _handlePostBookingQuestion(phone, message, existingToken);
     } else {
-      reply = await _handleGeneralChat(phone, message);
+      const intent = await claude.classifyIntent(message, stage);
+      if (intent === 'clinical_question') {
+        reply = await _handleClinicalQuestion(phone, message);
+      } else if (intent === 'medicine') {
+        reply = await _handleMedicineQuery(phone, message);
+      } else {
+        reply = await _handleGeneralChat(phone, message);
+      }
     }
   }
 
@@ -127,52 +137,62 @@ function _detectHindi(text) {
   return hindiWords.some(w => new RegExp(`\\b${w}\\b`, 'i').test(lower));
 }
 
+/**
+ * Format a YYYY-MM-DD date string into human-readable "14th September" style.
+ */
+function _formatHumanDate(dateStr) {
+  if (!dateStr) return '';
+  const parts = dateStr.split('-');
+  if (parts.length !== 3) return dateStr;
+  const year = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10) - 1; // JS months are 0-indexed
+  const day = parseInt(parts[2], 10);
+  const d = new Date(year, month, day);
+  if (isNaN(d.getTime())) return dateStr;
+
+  const months = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ];
+  const dayNum = d.getDate();
+  let suffix = 'th';
+  if (dayNum === 1 || dayNum === 21 || dayNum === 31) suffix = 'st';
+  else if (dayNum === 2 || dayNum === 22) suffix = 'nd';
+  else if (dayNum === 3 || dayNum === 23) suffix = 'rd';
+
+  return `${dayNum}${suffix} ${months[d.getMonth()]}`;
+}
+
 function _formatBookingConfirmation(token, isHindi) {
-  const isMorning = (token.slot_name || '').toLowerCase() === 'morning';
-  const slotDisplayEn = isMorning ? 'Morning' : 'Afternoon';
-  const slotDisplayHi = isMorning ? 'Subah / Morning' : 'Dopahar / Afternoon';
+  const dateDisplay = _formatHumanDate(token.sunday_date);
 
   if (isHindi) {
-    return `Aapka appointment confirm ho gaya hai.
-
+    return `Date: ${dateDisplay}
 Naam: ${token.patient_name}
-Token: #${token.token_number} (${slotDisplayHi})
-Samay: Lagbhag ${token.arrival_time}
-
-Kripya is samay tak clinic pahunch jayein.`;
+Token: #${token.token_number}
+Samay: ${token.arrival_time}`;
   }
 
-  return `Your appointment is confirmed.
-
+  return `Date: ${dateDisplay}
 Name: ${token.patient_name}
-Token: #${token.token_number} (${slotDisplayEn})
-Time: Approx. ${token.arrival_time}
-
-Please arrive around this time.`;
+Token: #${token.token_number}
+Time: ${token.arrival_time}`;
 }
 
 function _formatDuplicateNotice(token, isHindi) {
-  const isMorning = (token.slot_name || '').toLowerCase() === 'morning';
-  const slotDisplayEn = isMorning ? 'Morning' : 'Afternoon';
-  const slotDisplayHi = isMorning ? 'Subah / Morning' : 'Dopahar / Afternoon';
+  const dateDisplay = _formatHumanDate(token.sunday_date);
 
   if (isHindi) {
-    return `Aapka token pehle se booked hai.
-
+    return `Date: ${dateDisplay}
 Naam: ${token.patient_name}
-Token: #${token.token_number} (${slotDisplayHi})
-Samay: Lagbhag ${token.arrival_time}
-
-Kripya is samay tak clinic pahunch jayein.`;
+Token: #${token.token_number}
+Samay: ${token.arrival_time}`;
   }
 
-  return `You already have an appointment booked.
-
+  return `Date: ${dateDisplay}
 Name: ${token.patient_name}
-Token: #${token.token_number} (${slotDisplayEn})
-Time: Approx. ${token.arrival_time}
-
-Please arrive around this time.`;
+Token: #${token.token_number}
+Time: ${token.arrival_time}`;
 }
 
 async function _handleAppointmentBookingFlow(phone, message, sess, senderName, currentTime) {
@@ -335,10 +355,10 @@ async function _handleAppointmentBookingFlow(phone, message, sess, senderName, c
 
 function _extractNameFromText(text) {
   if (!text) return null;
-  const match = text.match(/(?:my name is|mera naam|naam|name is|i am|this is)\s+([A-Za-z\s]+?)(?:[.,!?]|$|\s+and|\s+i\s|\s+mujhe|\s+token|\s+chahiye|\s+hai|\s+hu|\s+hoon)/i);
+  const match = text.match(/(?:my name is|mera naam|naam|name is|i am|this is|मेरा\s+नाम|नाम|मैं)\s+([A-Za-z\u0900-\u097F\s]+?)(?:[.,!?।|]|$|\s+and|\s+aur|\s+और|\s+i\s|\s+mujhe|\s+मुझे|\s+token|\s+तोकन|\s+टोकन|\s+chahiye|\s+चाहिए|\s+चाही|\s+जाही|\s+hai|\s+है|\s+hu|\s+hoon|\s+हूँ|\s+हु)/i);
   if (match && match[1].trim()) {
     let name = match[1].trim();
-    name = name.replace(/\b(hai|hu|hoon|he|here|pls|please)\b/gi, '').trim();
+    name = name.replace(/\b(hai|hu|hoon|he|here|pls|please)\b/gi, '').replace(/(?:है|हूँ|हु|कृपया|प्लीज)/g, '').trim();
     return name || null;
   }
   return null;
@@ -347,10 +367,10 @@ function _extractNameFromText(text) {
 function _extractSlotPreference(text) {
   if (!text) return null;
   const lower = text.toLowerCase();
-  if (lower.includes('morning') || lower.includes('subah') || lower.includes('subha') || lower.includes('before lunch') || lower.includes('11:00') || lower.includes('11 am')) {
+  if (lower.includes('morning') || lower.includes('subah') || lower.includes('subha') || lower.includes('before lunch') || lower.includes('11:00') || lower.includes('11 am') || lower.includes('सुबह')) {
     return 'morning';
   }
-  if (lower.includes('afternoon') || lower.includes('lunch ke baad') || lower.includes('after lunch') || lower.includes('shaam') || lower.includes('sham') || lower.includes('after 3') || lower.includes('evening') || lower.includes('pm')) {
+  if (lower.includes('afternoon') || lower.includes('lunch ke baad') || lower.includes('after lunch') || lower.includes('shaam') || lower.includes('sham') || lower.includes('after 3') || lower.includes('evening') || lower.includes('pm') || lower.includes('दोपहर') || lower.includes('शाम')) {
     return 'afternoon';
   }
   return null;
@@ -359,6 +379,49 @@ function _extractSlotPreference(text) {
 function _isAffirmative(text) {
   const lower = (text || '').toLowerCase().trim();
   return ['yes', 'yeah', 'yep', 'sure', 'ok', 'okay', 'ha', 'haan', 'chalega', 'fine', 'proceed', '1', 'yes please'].some(w => lower.startsWith(w) || lower === w);
+}
+
+// ─── Post-Booking Question Handler ──────────────────────────────────
+
+/**
+ * Handle questions from a patient who already has a booking.
+ * Only answers from real booking data; deflects everything else.
+ */
+function _handlePostBookingQuestion(phone, message, token) {
+  const isHindi = _detectHindi(message);
+  const lower = (message || '').toLowerCase();
+
+  // Check if the question is about their booking data
+  const bookingDataKeywords = [
+    'token', 'number', 'naam', 'name', 'time', 'samay', 'waqt',
+    'date', 'tareekh', 'tarikh', 'kab', 'kitne baje',
+    'mera', 'my', 'appointment', 'booking',
+  ];
+
+  const isBookingQuery = bookingDataKeywords.some(kw => lower.includes(kw));
+
+  if (isBookingQuery) {
+    // Answer from real booking data
+    const dateDisplay = _formatHumanDate(token.sunday_date);
+
+    if (isHindi) {
+      return `Date: ${dateDisplay}
+Naam: ${token.patient_name}
+Token: #${token.token_number}
+Samay: ${token.arrival_time}`;
+    }
+
+    return `Date: ${dateDisplay}
+Name: ${token.patient_name}
+Token: #${token.token_number}
+Time: ${token.arrival_time}`;
+  }
+
+  // Deflect — do not answer from general knowledge
+  if (isHindi) {
+    return 'Iske liye kripya clinic se sampark karein.';
+  }
+  return 'Please contact the clinic directly about this.';
 }
 
 // ─── Non-Appointment General Chat & Inquiries ────────────────────────

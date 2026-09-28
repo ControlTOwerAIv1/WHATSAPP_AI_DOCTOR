@@ -152,3 +152,40 @@ Baileys returns timestamps as protobuf `{low, high, unsigned}` objects.
 - No status/Stories support
 - Media files accumulate in `media/` folder — clean up periodically
 - Edit only works for text messages (WhatsApp limitation)
+
+## Whisper Transcription Server (Voice Notes)
+
+A self-hosted, localhost-only HTTP server wrapping `faster-whisper` for converting incoming WhatsApp audio notes into text without using external paid APIs.
+
+### System Requirements
+- Python 3.8+
+- `pip install faster-whisper`
+- CPU (int8 quantization by default) or NVIDIA GPU (CUDA)
+
+### Configuration (.env)
+```env
+WHISPER_MODEL=small   # tiny, base, small, medium, large (default: small)
+WHISPER_PORT=5555     # Localhost port (default: 5555)
+```
+
+### Starting the Server
+
+**Via PM2 (Production):**
+```bash
+pm2 start ecosystem.config.js --only whisper
+pm2 save
+```
+
+**Directly via Python (Development / Testing):**
+```bash
+python src/ai-bot/transcribe-server.py
+```
+
+### Endpoints (Localhost Only)
+- `GET /health` — Verifies model status and server availability.
+- `POST /transcribe` — Accepts `{"file_path": "/path/to/audio.oga"}` and returns `{"text": "...", "language": "hi", "confidence": 0.85, ...}`.
+
+### Safeguards & Fallbacks
+- **Audio Duration Guard**: Audio notes exceeding 15 seconds are rejected immediately with a friendly message asking for shorter notes or text, avoiding long transcription delays on CPU.
+- **Immediate Acknowledgment**: Clips >3 seconds receive an immediate acknowledgment ("Ek minute..." / "One moment...") so patients aren't left waiting in silence.
+- **Graceful Fallback**: If the transcription server is offline or fails, the bot automatically falls back to requesting text input ("Maaf kijiye, samajh nahi aaya. Kripya text mein likhein."), never leaving the patient on silent read.

@@ -431,6 +431,7 @@ async function processIncomingMessage(msg, contacts, metadata) {
   let mediaUrl = null;
   let fileName = null;
   let mimetype = null;
+  let mediaDuration = null;
   let quotedMessageId = null;
   let quotedContent = null;
   let quotedSender = null;
@@ -492,6 +493,10 @@ async function processIncomingMessage(msg, contacts, metadata) {
       mediaType = msg.audio?.voice ? 'voice' : 'audio';
       mimetype = msg.audio?.mime_type || 'audio/ogg';
       content = msg.audio?.voice ? 'Voice message' : 'Audio file';
+      // WhatsApp provides duration in seconds for audio messages
+      if (msg.audio?.duration) {
+        mediaDuration = msg.audio.duration;
+      }
       if (msg.audio?.id) {
         try {
           const media = await downloadMedia(msg.audio.id);
@@ -592,6 +597,7 @@ async function processIncomingMessage(msg, contacts, metadata) {
     mediaUrl,
     fileName,
     mimetype,
+    mediaDuration,
     timestamp,
     isGroup: false,
     editedAt: null,

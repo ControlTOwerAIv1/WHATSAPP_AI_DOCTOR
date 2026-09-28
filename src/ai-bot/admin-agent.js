@@ -4,8 +4,9 @@
  * Handles incoming messages from ADMIN_PHONE_NUMBER.
  * Capabilities:
  *   - Classifies messages as QUERY or COMMAND using Claude.
- *   - For QUERY: Answers using current effective schedule, never writes to Sheets.
- *   - For COMMAND: Determines PERMANENT (Settings tab) vs ONE-OFF (Overrides tab, default).
+ *   - For QUERY: Answers using current effective schedule, never writes data.
+ *   - Supports chat-based data export (CSV or inline table).
+ *   - For COMMAND: Determines PERMANENT (Settings) vs ONE-OFF (Overrides, default).
  *   - Confirm-before-mutate workflow:
  *     - Summarizes exact changes and target tab in plain language.
  *     - Waits for explicit confirmation (supports English, Hindi, Urdu, Hinglish).
@@ -18,8 +19,9 @@
 const claude = require('./claude');
 const session = require('./session');
 const schedule = require('./schedule');
-const sheets = require('./sheets');
+const store = require('./store');
 const doctorAgent = require('./doctor-agent');
+const exportChat = require('./export-chat');
 const { getCurrentTime } = require('./clock');
 
 /**
@@ -82,6 +84,20 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
   session.appendHistory(phone, 'user', message);
 
   try {
+    // ── 0. Export request (highest priority — no confirmation needed) ──
+    if (exportChat.isExportRequest(message)) {
+      const sendText = async (p, text) => {
+        try {
+          const cloudapi = require('../cloudapi');
+          await cloudapi.sendText(p, text);
+        } catch (_) {}
+        return text;
+      };
+      const reply = await exportChat.handleExportRequest(message, phone, sendText, null);
+      session.appendHistory(phone, 'assistant', reply);
+      return reply;
+    }
+
     // ── 1. Check for Pending Confirmation ───────────────────────────
     const pending = session.getAdminPending(phone);
     if (pending) {
@@ -102,7 +118,7 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
             notes: pending.data?.notes || 'Admin one-off schedule override',
           };
 
-          const res = await sheets.addOverrideToSheet(overrideRecord);
+          const res = await store.addOverride(overrideRecord);
           schedule.invalidateCache();
 
           // Step 10b, c, e: Notify affected patients if clinic closed or capacity reduced
@@ -130,7 +146,7 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
           session.clearAdminPending(phone);
 
           if (!res.success) {
-            const errReply = `❌ Failed to write override to Google Sheets: ${res.error}`;
+            const errReply = `❌ Failed to save override: ${res.error}`;
             session.appendHistory(phone, 'assistant', errReply);
             return errReply;
           }
@@ -148,13 +164,13 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
           } else if (overrideRecord.type === 'capacity_change' && notifiedCount > 0) {
             reply = `Reduced clinic capacity for ${overrideRecord.target_date}. Notified ${notifiedCount} patients automatically.`;
           } else {
-            reply = `✅ Confirmed! A one-off override has been written to the **Overrides** tab for **${overrideRecord.target_date}** (${overrideRecord.type}). The change is now live and in effect.`;
+            reply = `✅ Confirmed! A one-off override has been saved for **${overrideRecord.target_date}** (${overrideRecord.type}). The change is now live and in effect.`;
           }
 
           session.appendHistory(phone, 'assistant', reply);
           return reply;
         } else if (pending.target_tab === 'Settings') {
-          const res = await sheets.updateSettingsInSheet(pending.updates || {});
+          const res = store.updateSettings(pending.updates || {});
           schedule.invalidateCache();
           session.clearAdminPending(phone);
 
@@ -164,7 +180,7 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
             return errReply;
           }
 
-          const reply = `✅ Confirmed! Permanent clinic schedule settings have been updated in the **Settings** tab. The change is now live.`;
+          const reply = `✅ Confirmed! Permanent clinic schedule settings have been updated. The change is now live.`;
           session.appendHistory(phone, 'assistant', reply);
           return reply;
         }
@@ -197,8 +213,8 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
 
       // Fetch current effective schedule and context
       const effectiveSchedule = await schedule.getEffectiveSchedule();
-      const settings = await sheets.getSettingsFromSheet();
-      const overrides = await sheets.getOverridesFromSheet();
+      const settings = store.getSettings();
+      const overrides = store.getOverrides();
 
       // Include macro capacity metrics for CLINIC_CAPACITY questions
       const targetDate = await schedule.findNextOperatingDate(currentTime);
@@ -233,7 +249,7 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
     }
 
     // ── 3. Handle COMMAND (Confirm-Before-Mutate) ────────────────────
-    const currentSettings = await sheets.getSettingsFromSheet();
+    const currentSettings = store.getSettings();
     const currentDateTimeISO = currentTime.toISOString().substring(0, 19);
     const parsed = await claude.parseAdminCommand(message, currentSettings, currentDateTimeISO);
 

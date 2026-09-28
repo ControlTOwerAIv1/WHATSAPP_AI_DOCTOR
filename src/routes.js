@@ -7,8 +7,10 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const multer = require('multer');
 const mime = require('mime-types');
+const store = require('./ai-bot/store');
 
 function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR }) {
   const storage = multer.diskStorage({
@@ -102,11 +104,56 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   }
 
   // ── Meta WhatsApp Cloud API Webhook Endpoints ─────────────────────────
+
+  /**
+   * Verify X-Hub-Signature-256 on the raw request body.
+   * Returns true if OK. Returns false and sends 403 if invalid.
+   * Skips (returns true) if WHATSAPP_APP_SECRET is not configured (warns once).
+   */
+  function _verifyWebhookSignature(req, res) {
+    const appSecret = process.env.WHATSAPP_APP_SECRET || process.env.META_APP_SECRET || '';
+    const sigHeader = req.headers['x-hub-signature-256'] || '';
+
+    if (!appSecret) {
+      if (!_verifyWebhookSignature._warned) {
+        console.warn('[Webhook] WHATSAPP_APP_SECRET not set — skipping signature verification');
+        _verifyWebhookSignature._warned = true;
+      }
+      return true;
+    }
+
+    if (!sigHeader) {
+      console.warn('[Webhook] ⚠️ Rejected POST /webhook: missing X-Hub-Signature-256');
+      res.status(403).json({ error: 'Missing signature' });
+      return false;
+    }
+
+    const rawBody = req.rawBody;
+    if (!rawBody) {
+      console.warn('[Webhook] ⚠️ Rejected POST /webhook: raw body not available');
+      res.status(403).json({ error: 'Bad request' });
+      return false;
+    }
+
+    const expected = 'sha256=' + crypto.createHmac('sha256', appSecret).update(rawBody).digest('hex');
+    const sigBuf   = Buffer.from(sigHeader);
+    const expBuf   = Buffer.from(expected);
+
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      console.warn('[Webhook] ⚠️ Rejected POST /webhook: signature mismatch');
+      res.status(403).json({ error: 'Invalid signature' });
+      return false;
+    }
+
+    return true;
+  }
+
   app.get('/webhook', (req, res) => {
     whatsapp.handleWebhookVerification(req, res);
   });
 
   app.post('/webhook', async (req, res) => {
+    if (!_verifyWebhookSignature(req, res)) return;
     res.sendStatus(200);
     try {
       if (typeof whatsapp.handleWebhookPayload === 'function') {
@@ -122,6 +169,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   });
 
   app.post('/api/webhook', async (req, res) => {
+    if (!_verifyWebhookSignature(req, res)) return;
     res.sendStatus(200);
     try {
       if (typeof whatsapp.handleWebhookPayload === 'function') {
@@ -131,6 +179,118 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       console.error('[Routes] Webhook processing error:', err.message);
     }
   });
+
+  // ── Dashboard Auth (login / logout) ─────────────────────────────────
+
+  function _getAdminHash() {
+    return process.env.ECHO_ADMIN_PASSWORD_HASH || '';
+  }
+
+  function _getAdminUser() {
+    return process.env.ECHO_ADMIN_USER || 'admin';
+  }
+
+  function _verifyPassword(plain, hash) {
+    // Constant-time bcrypt comparison
+    try {
+      const bcrypt = require('bcrypt');
+      return bcrypt.compareSync(plain, hash);
+    } catch {
+      // bcrypt not installed — fall back to argon2 if available
+      try {
+        const argon2 = require('argon2');
+        return argon2.verify(hash, plain); // returns Promise but we call sync fallback
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  // Public login endpoint (not protected)
+  app.post('/api/auth/login', async (req, res) => {
+    const { username, password } = req.body || {};
+    const ip = req.ip || req.socket?.remoteAddress || '';
+
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Missing credentials' });
+    }
+
+    if (store.isLoginRateLimited(ip, username)) {
+      console.warn(`[Auth] Rate-limited login attempt from ${ip} for user ${username}`);
+      return res.status(429).json({ error: 'Too many login attempts. Try again in 15 minutes.' });
+    }
+
+    const adminUser = _getAdminUser();
+    const adminHash = _getAdminHash();
+
+    if (!adminHash) {
+      console.error('[Auth] ECHO_ADMIN_PASSWORD_HASH not set — dashboard login disabled');
+      return res.status(503).json({ error: 'Dashboard login not configured' });
+    }
+
+    // Constant-time username comparison
+    const userBuf = Buffer.from(username);
+    const adminBuf = Buffer.from(adminUser);
+    const userMatch = userBuf.length === adminBuf.length && crypto.timingSafeEqual(userBuf, adminBuf);
+
+    let passwordMatch = false;
+    try {
+      const bcrypt = require('bcrypt');
+      passwordMatch = await bcrypt.compare(password, adminHash);
+    } catch {
+      // bcrypt not installed, try timing-safe constant-time hash compare as fallback
+      passwordMatch = false;
+    }
+
+    if (!userMatch || !passwordMatch) {
+      store.recordLoginAttempt(ip, username);
+      console.warn(`[Auth] Failed login attempt: user=${username} ip=${ip}`);
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Successful login — create session
+    const token = crypto.randomBytes(32).toString('hex');
+    store.createSession(username, token);
+
+    res.cookie('echo_session', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'Lax',
+      maxAge: 24 * 60 * 60 * 1000, // 24h max cookie life
+    });
+
+    console.log(`[Auth] Login successful: user=${username} ip=${ip}`);
+    res.json({ success: true, username });
+  });
+
+  app.post('/api/auth/logout', (req, res) => {
+    const token = req.cookies?.echo_session;
+    if (token) store.deleteSession(token);
+    res.clearCookie('echo_session');
+    res.json({ success: true });
+  });
+
+  app.get('/api/auth/me', (req, res) => {
+    const token = req.cookies?.echo_session;
+    const session = store.getSession(token);
+    if (!session) return res.status(401).json({ error: 'Not authenticated' });
+    res.json({ username: session.username });
+  });
+
+  // ── Session authentication middleware (protects all /api/* except auth routes) ─
+
+  function _requireSession(req, res, next) {
+    // Public routes: webhook verification is handled separately; auth endpoints are public
+    const PUBLIC_PREFIXES = ['/api/auth/', '/api/webhook', '/api/health'];
+    if (PUBLIC_PREFIXES.some(p => req.path.startsWith(p))) return next();
+    const token = req.cookies?.echo_session;
+    if (!store.getSession(token)) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    next();
+  }
+
+  app.use('/api', _requireSession);
 
   app.get('/api/status', (req, res) => {
     const { id: connectorOperatorId, name: connectorOperatorName } = stores.getConnectorOperator();
@@ -679,6 +839,16 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   });
 
   // WebSocket (operator dashboard <-> server)
+  // Session guard: reject unauthenticated socket.io handshakes
+  io.use((socket, next) => {
+    const cookies = socket.handshake.headers.cookie || '';
+    const match   = cookies.match(/echo_session=([^;]+)/);
+    const token   = match ? match[1] : null;
+    if (store.getSession(token)) return next();
+    console.warn(`[Auth] Rejected socket.io handshake: no valid session (socket ${socket.id})`);
+    next(new Error('Authentication required'));
+  });
+
   io.on('connection', (socket) => {
     console.log(`[Bridge] Operator connected: ${socket.id}`);
 
@@ -882,6 +1052,38 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       }
       broadcastOperators();
     });
+  });
+  // ── Booking Export API (Part 4g) ───────────────────────────────────
+  app.get('/api/export', async (req, res) => {
+    try {
+      const token = req.cookies?.echo_session;
+      const session = store.getSession(token);
+      if (!session) return res.status(401).json({ error: 'Authentication required' });
+
+      let { from, to, format = 'csv' } = req.query;
+
+      // Default to last 30 days
+      if (!from || !to) {
+        const now = new Date();
+        to   = to   || now.toISOString().slice(0, 10);
+        const d30 = new Date(now); d30.setDate(d30.getDate() - 30);
+        from = from || d30.toISOString().slice(0, 10);
+      }
+
+      const rows = store.getBookingsInRange(from, to);
+      store.logExport({ requestedBy: session.username, fromDate: from, toDate: to, rowCount: rows.length, format });
+
+      const { buildExportCsv } = require('./ai-bot/export');
+      const csv = buildExportCsv(rows);
+      const filename = `bookings_${from}_to_${to}.csv`;
+
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(csv);
+    } catch (err) {
+      console.error('[Routes] Export error:', err.message);
+      res.status(500).json({ error: err.message });
+    }
   });
 }
 

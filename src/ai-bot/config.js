@@ -35,17 +35,12 @@ function init(rootDir) {
   // Build config from env
   _config = {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
-    googleCredentialsFile: path.resolve(rootDir, process.env.GOOGLE_CREDENTIALS_FILE || 'credentials.json'),
-    googleSheetId: process.env.GOOGLE_SHEET_ID || '',
     adminPhoneNumber: normalizePhone(process.env.ADMIN_PHONE_NUMBER || '919876543200'),
     enabled: (process.env.AI_BOT_ENABLED || 'true').toLowerCase() === 'true',
   };
 
   if (!_config.anthropicApiKey) {
     console.warn('[AI-Bot] ANTHROPIC_API_KEY not set — AI bot will not function');
-  }
-  if (!_config.googleSheetId) {
-    console.warn('[AI-Bot] GOOGLE_SHEET_ID not set — appointment booking will not function');
   }
 }
 

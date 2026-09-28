@@ -2,7 +2,9 @@
 /auth_info
 /media
 relay.sqlite*
+*.sqlite
 /logs/
+/backups/
 .env
 credentials.json
 doctors.json
@@ -16,4 +18,3 @@ nodemon.json
 .claude/
 .vscode/
 /data/*
-     
