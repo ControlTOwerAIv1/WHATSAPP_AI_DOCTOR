@@ -217,7 +217,7 @@ Create a `doctors.json` file in the project root:
 {
   "doctors": [
     {
-      "name": "Dr. Sarah",
+      "name": "Admin",
       "phone": "919876543210",
       "specialty": "General Medicine"
     }

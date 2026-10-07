@@ -45,6 +45,76 @@ function _isDoctorSpecificQuery(msg) {
   );
 }
 
+/**
+ * Detect if admin is trying to book a token ON BEHALF OF a patient.
+ * Triggers before the normal QUERY/COMMAND path.
+ * Handles typos (extra letters like "boook"), standalone booking intent,
+ * and common phrasings from clinic staff.
+ */
+function _isAdminBookRequest(msg) {
+  const l = msg.toLowerCase().trim();
+
+  // Fuzzy-match "book" variants (handles typos like "boook", "bokk", etc.)
+  const hasBookIntent = /\bb[o]{1,4}k\b/i.test(l) ||
+    l.includes('reserve') ||
+    l.includes('register') ||
+    l.includes('add a patient') ||
+    l.includes('add patient') ||
+    l.includes('need to book') ||
+    l.includes('want to book') ||
+    l.includes('can i book') ||
+    l.includes('book appointment') ||
+    l.includes('book token') ||
+    l.includes('appointment for') ||
+    l.includes('token for');
+
+  if (!hasBookIntent) return false;
+
+  // Must mention someone/something to book FOR, OR be a standalone booking intent
+  const hasTarget =
+    l.includes('for ') ||
+    l.includes('patient') ||
+    l.includes('phone') ||
+    l.includes('number') ||
+    l.includes('naam') ||
+    l.includes('name') ||
+    // standalone: "Book an appointment" — let Claude extract details interactively
+    /\bb[o]{1,4}k\s+(a\s+)?(an?\s+)?(token|appointment|slot)\b/i.test(l);
+
+  return hasTarget || (
+    l.match(/(?:patient|person).*(?:naam|name).*(?:phone|number|mob)/i) !== null
+  );
+}
+
+/**
+ * Build the bilingual (Hindi + English) patient confirmation message for admin-initiated bookings.
+ */
+function _formatPatientConfirmationBilingual(token) {
+  const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const dateParts = (token.sunday_date || '').split('-');
+  let dateDisplay = token.sunday_date;
+  if (dateParts.length === 3) {
+    const d = parseInt(dateParts[2], 10);
+    const m = parseInt(dateParts[1], 10) - 1;
+    let suffix = 'th';
+    if (d === 1 || d === 21 || d === 31) suffix = 'st';
+    else if (d === 2 || d === 22) suffix = 'nd';
+    else if (d === 3 || d === 23) suffix = 'rd';
+    dateDisplay = `${d}${suffix} ${months[m]}`;
+  }
+
+  // Hindi block first, then English
+  return `Date: ${dateDisplay}
+Naam: ${token.patient_name}
+Token: #${token.token_number}
+Samay: ${token.arrival_time}
+
+Date: ${dateDisplay}
+Name: ${token.patient_name}
+Token: #${token.token_number}
+Time: ${token.arrival_time}`;
+}
+
 let _notificationSender = null;
 
 /**
@@ -98,12 +168,317 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
       return reply;
     }
 
+    // ── 0b. Admin-initiated patient booking (ADMIN_BOOK) ──────────────
+    // Detected before QUERY/COMMAND to avoid misclassification of
+    // "book for Ramesh, phone 9876543210, tomorrow" as a COMMAND.
+    if (_isAdminBookRequest(message)) {
+      const currentDateTimeISO = currentTime.toISOString().substring(0, 19);
+      const nextOperatingDate = await schedule.findNextOperatingDate(currentTime);
+
+      const parsed = await claude.parseAdminBookCommand(message, currentDateTimeISO, nextOperatingDate);
+
+      if (parsed && parsed.patient_name && parsed.patient_phone) {
+        // Resolve target date
+        const targetDate = parsed.target_date || nextOperatingDate;
+
+        // Validate that targetDate is an actual operating day
+        const effectiveSchedule = await schedule.getEffectiveSchedule(targetDate);
+        const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const targetDateObj = new Date(targetDate + 'T12:00:00Z');
+        const targetDayName = dayNames[targetDateObj.getUTCDay()];
+        const isOverrideOpen = effectiveSchedule.is_override && effectiveSchedule.override_type === 'open_extra_day';
+        const isRegularDay = Array.isArray(effectiveSchedule.operating_days) &&
+          effectiveSchedule.operating_days.includes(targetDayName);
+        const isClosed = effectiveSchedule.is_override && effectiveSchedule.override_type === 'closed';
+        const isOperatingDay = !isClosed && (isOverrideOpen || isRegularDay);
+
+        if (!isOperatingDay || effectiveSchedule.max_tokens === 0) {
+          const reply = `\u274c Cannot book: ${targetDate} (${targetDayName}) is not an operating day. Operating days: ${(effectiveSchedule.operating_days || []).join(', ')}. Please specify a valid clinic date.`;
+          session.appendHistory(phone, 'assistant', reply);
+          return reply;
+        }
+
+        // Check for duplicate before showing confirmation
+        const existingToken = schedule.getTokenByPhone(parsed.patient_phone, targetDate);
+        if (existingToken) {
+          const reply = `❌ ${parsed.patient_name} (${parsed.patient_phone}) already has Token #${existingToken.token_number} for ${targetDate}. No new booking was made.`;
+          session.appendHistory(phone, 'assistant', reply);
+          return reply;
+        }
+
+        // Determine which slot would be assigned (for summary)
+        const avail = await schedule.getSlotAvailability(targetDate);
+        const resolvedSlot = parsed.slot_preference ||
+          (!avail.morning.isFull ? 'morning' : !avail.afternoon.isFull ? 'afternoon' : null);
+
+        if (!resolvedSlot) {
+          const reply = `❌ Cannot book — all tokens for ${targetDate} are already full.`;
+          session.appendHistory(phone, 'assistant', reply);
+          return reply;
+        }
+
+        const slotDetail = avail[resolvedSlot];
+        const estimatedToken = resolvedSlot === 'morning'
+          ? avail.morning.booked + 1
+          : effectiveSchedule.slots.morning.token_cap + avail.afternoon.booked + 1;
+
+        const confirmPrompt = `Admin booking summary:\n• Patient: ${parsed.patient_name}\n• Phone: ${parsed.patient_phone}\n• Date: ${targetDate}\n• Slot: ${resolvedSlot} (Token ~#${estimatedToken})\n\nReply 'yes' to confirm, 'no' to cancel, or send a correction (e.g. "wrong number, use 919876500000").`;
+
+        session.setAdminPending(phone, {
+          type: 'ADMIN_BOOK',
+          data: {
+            patient_name: parsed.patient_name,
+            patient_phone: parsed.patient_phone.replace(/[^0-9]/g, ''),
+            target_date: targetDate,
+            slot_preference: resolvedSlot,
+          },
+          confirmation_prompt: confirmPrompt,
+        });
+
+        session.appendHistory(phone, 'assistant', confirmPrompt);
+        return confirmPrompt;
+
+      } else {
+        // Parsing succeeded partially (name without phone, or nothing) — ask admin for missing details
+        const extractedName = parsed?.patient_name || null;
+        const extractedPhone = parsed?.patient_phone || null;
+
+        let askMsg;
+        if (!extractedName && !extractedPhone) {
+          askMsg = `Sure, I can book an appointment for a patient. Please provide:\n• Patient full name\n• Patient WhatsApp phone number (with country code, e.g. 919876543210)`;
+        } else if (extractedName && !extractedPhone) {
+          askMsg = `Got the name: *${extractedName}*. Please also provide the patient's WhatsApp phone number (with country code, e.g. 919876543210).`;
+        } else {
+          askMsg = `Got the phone number. Please also provide the patient's full name.`;
+        }
+
+        // Store partial info in session (with 10-min expiry via setAdminPending) so next reply can complete it
+        session.setAdminPending(phone, {
+          type: 'ADMIN_BOOK_PARTIAL',
+          data: {
+            patient_name: extractedName,
+            patient_phone: extractedPhone ? extractedPhone.replace(/[^0-9]/g, '') : null,
+            target_date: parsed?.target_date || nextOperatingDate,
+            slot_preference: parsed?.slot_preference || null,
+          },
+          confirmation_prompt: askMsg,
+        });
+
+        session.appendHistory(phone, 'assistant', askMsg);
+        return askMsg;
+      }
+    }
+
+
+    // ── 0c. Complete a partial admin booking (phone or name was missing) ─
+    const partialPending = session.getAdminPending(phone);
+    if (partialPending && partialPending.type === 'ADMIN_BOOK_PARTIAL') {
+      const currentDateTimeISO = currentTime.toISOString().substring(0, 19);
+      const nextOperatingDate = await schedule.findNextOperatingDate(currentTime);
+
+      // First: check if this is a correction to the partial draft
+      const correctionCheck = await claude.classifyAdminBookCorrection(message, partialPending.data);
+      if (correctionCheck.is_correction && correctionCheck.field && correctionCheck.new_value) {
+        const updatedData = { ...partialPending.data };
+        if (correctionCheck.field === 'name') updatedData.patient_name = correctionCheck.new_value;
+        if (correctionCheck.field === 'phone') updatedData.patient_phone = correctionCheck.new_value.replace(/[^0-9]/g, '');
+        if (correctionCheck.field === 'date') updatedData.target_date = correctionCheck.new_value;
+        session.setAdminPending(phone, { ...partialPending, data: updatedData });
+
+        if (updatedData.patient_name && updatedData.patient_phone) {
+          // Now complete — fall through to full booking below by re-running the merge logic
+        } else {
+          const missingPhone = !updatedData.patient_phone;
+          const askMsg = missingPhone
+            ? `Updated. Got name: *${updatedData.patient_name || '(none)'}*. Please provide the patient's WhatsApp phone number.`
+            : `Updated. Please also provide the patient's full name.`;
+          session.appendHistory(phone, 'assistant', askMsg);
+          return askMsg;
+        }
+      }
+
+      // Try to extract the missing info from this new message
+      // Use validateName for bare name replies (no book keyword) to avoid null from parseAdminBookCommand
+      const freshParsed = await claude.parseAdminBookCommand(message, currentDateTimeISO, nextOperatingDate);
+
+      // Also try raw name validation if freshParsed gave no name
+      let resolvedName = freshParsed?.patient_name || null;
+      if (!resolvedName && !partialPending.data.patient_name) {
+        // Message might be a bare name reply — validate it as a name
+        const nameValidation = await claude.validateName(message);
+        if (nameValidation.valid && nameValidation.name) {
+          resolvedName = nameValidation.name;
+        }
+      } else if (!resolvedName && partialPending.data.patient_name) {
+        // Keep existing name from partial store
+        resolvedName = partialPending.data.patient_name;
+      }
+
+      // For phone: if message is purely numeric-ish, treat it as phone
+      let resolvedPhone = freshParsed?.patient_phone || null;
+      if (!resolvedPhone && !partialPending.data.patient_phone) {
+        const digitsOnly = message.replace(/[^0-9]/g, '');
+        if (digitsOnly.length >= 8) resolvedPhone = digitsOnly;
+      } else if (!resolvedPhone) {
+        resolvedPhone = partialPending.data.patient_phone;
+      }
+
+      const merged = {
+        patient_name: resolvedName,
+        patient_phone: resolvedPhone,
+        target_date: freshParsed?.target_date || partialPending.data.target_date || nextOperatingDate,
+        slot_preference: freshParsed?.slot_preference || partialPending.data.slot_preference,
+      };
+
+      if (merged.patient_name && merged.patient_phone) {
+        // We now have enough — clear partial state and run full booking flow
+        session.clearAdminPending(phone);
+
+        const targetDate = merged.target_date;
+        const effectiveSchedule = await schedule.getEffectiveSchedule(targetDate);
+        const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const targetDateObj = new Date(targetDate + 'T12:00:00Z');
+        const targetDayName = dayNames[targetDateObj.getUTCDay()];
+        const isOverrideOpen = effectiveSchedule.is_override && effectiveSchedule.override_type === 'open_extra_day';
+        const isRegularDay = Array.isArray(effectiveSchedule.operating_days) &&
+          effectiveSchedule.operating_days.includes(targetDayName);
+        const isClosed = effectiveSchedule.is_override && effectiveSchedule.override_type === 'closed';
+        const isOperatingDay = !isClosed && (isOverrideOpen || isRegularDay);
+
+        if (!isOperatingDay || effectiveSchedule.max_tokens === 0) {
+          const reply = `❌ Cannot book: ${targetDate} (${targetDayName}) is not an operating day.`;
+          session.appendHistory(phone, 'assistant', reply);
+          return reply;
+        }
+
+        const avail = await schedule.getSlotAvailability(targetDate);
+        const resolvedSlot = merged.slot_preference ||
+          (!avail.morning.isFull ? 'morning' : !avail.afternoon.isFull ? 'afternoon' : null);
+
+        if (!resolvedSlot) {
+          const reply = `❌ Cannot book — all tokens for ${targetDate} are already full.`;
+          session.appendHistory(phone, 'assistant', reply);
+          return reply;
+        }
+
+        const estimatedToken = resolvedSlot === 'morning'
+          ? avail.morning.booked + 1
+          : effectiveSchedule.slots.morning.token_cap + avail.afternoon.booked + 1;
+
+        const confirmPrompt = `Admin booking summary:\n• Patient: ${merged.patient_name}\n• Phone: ${merged.patient_phone}\n• Date: ${targetDate}\n• Slot: ${resolvedSlot} (Token ~#${estimatedToken})\n\nReply 'yes' to confirm, 'no' to cancel, or send a correction (e.g. "wrong number, use 919876500000").`;
+
+        session.setAdminPending(phone, {
+          type: 'ADMIN_BOOK',
+          data: {
+            patient_name: merged.patient_name,
+            patient_phone: merged.patient_phone.replace(/[^0-9]/g, ''),
+            target_date: targetDate,
+            slot_preference: resolvedSlot,
+          },
+          confirmation_prompt: confirmPrompt,
+        });
+
+        session.appendHistory(phone, 'assistant', confirmPrompt);
+        return confirmPrompt;
+      } else {
+        // Still missing something — re-prompt
+        const missingPhone = !merged.patient_phone;
+        const askMsg = missingPhone
+          ? `Got the name: *${merged.patient_name || '(unknown)'}*. Please provide the patient's WhatsApp phone number (with country code, e.g. 919876543210).`
+          : `Please provide the patient's full name.`;
+        // Update partial state with whatever we gathered
+        session.setAdminPending(phone, { ...partialPending, data: { ...partialPending.data, ...merged } });
+        session.appendHistory(phone, 'assistant', askMsg);
+        return askMsg;
+      }
+    }
+
     // ── 1. Check for Pending Confirmation ───────────────────────────
     const pending = session.getAdminPending(phone);
     if (pending) {
+      // ── 1a. Check for correction FIRST (before confirm/cancel), applies to both ADMIN_BOOK and ADMIN_BOOK_PARTIAL ──
+      if (pending.type === 'ADMIN_BOOK') {
+        const correctionCheck = await claude.classifyAdminBookCorrection(message, pending.data);
+        if (correctionCheck.is_correction && correctionCheck.field && correctionCheck.new_value) {
+          const updatedData = { ...pending.data };
+          if (correctionCheck.field === 'name') updatedData.patient_name = correctionCheck.new_value;
+          if (correctionCheck.field === 'phone') updatedData.patient_phone = correctionCheck.new_value.replace(/[^0-9]/g, '');
+          if (correctionCheck.field === 'date') updatedData.target_date = correctionCheck.new_value;
+
+          // Recompute estimated token if we have enough data
+          const targetDate = updatedData.target_date;
+          const avail = await schedule.getSlotAvailability(targetDate);
+          const resolvedSlot = updatedData.slot_preference ||
+            (!avail.morning.isFull ? 'morning' : !avail.afternoon.isFull ? 'afternoon' : null);
+          const effectiveSchedule = await schedule.getEffectiveSchedule(targetDate);
+          const estimatedToken = resolvedSlot === 'morning'
+            ? avail.morning.booked + 1
+            : (effectiveSchedule.slots?.morning?.token_cap || 0) + avail.afternoon.booked + 1;
+
+          const updatedPrompt = `Updated. Booking summary:\n• Patient: ${updatedData.patient_name}\n• Phone: ${updatedData.patient_phone}\n• Date: ${targetDate}\n• Slot: ${resolvedSlot || 'TBD'} (Token ~#${estimatedToken})\n\nReply 'yes' to confirm, 'no' to cancel, or send another correction.`;
+          session.setAdminPending(phone, { ...pending, data: updatedData, confirmation_prompt: updatedPrompt });
+          session.appendHistory(phone, 'assistant', updatedPrompt);
+          return updatedPrompt;
+        }
+      }
+
       const confClassification = await claude.classifyAdminConfirmation(message);
 
+
       if (confClassification === 'confirm') {
+        // ── ADMIN_BOOK confirmation path ──────────────────────────────────
+        if (pending.type === 'ADMIN_BOOK') {
+          const { patient_name, patient_phone, target_date, slot_preference } = pending.data;
+
+          const allocation = await schedule.allocateToken({
+            phone: patient_phone,
+            name: patient_name,
+            slotPreference: slot_preference || 'morning',
+            currentTime,
+            targetDate: target_date,
+          });
+
+          session.clearAdminPending(phone);
+
+          if (allocation.isDuplicate && allocation.token) {
+            const reply = `❌ A token already exists for ${patient_name} (${patient_phone}) on ${target_date}. No new booking was made.`;
+            session.appendHistory(phone, 'assistant', reply);
+            return reply;
+          }
+
+          if (!allocation.success) {
+            const reasonMsg = allocation.reason === 'all_full'
+              ? 'all tokens for that date are full'
+              : `the ${allocation.reason?.replace('_full', '')} slot is full`;
+            const reply = `❌ Could not book — ${reasonMsg}. No token was allocated.`;
+            session.appendHistory(phone, 'assistant', reply);
+            return reply;
+          }
+
+          const token = allocation.token;
+
+          // Build the bilingual patient confirmation message (same format as self-service bookings)
+          const patientMsg = _formatPatientConfirmationBilingual(token);
+          let patientNotified = false;
+          let notifyError = null;
+          try {
+            await _sendPatientNotification(patient_phone, patientMsg);
+            // If sendText didn't throw, the Cloud API returned a valid message ID — delivery confirmed.
+            patientNotified = true;
+            console.log(`[AI-Bot] ✅ Admin-booked patient notified: ${patient_phone}`);
+          } catch (notifyErr) {
+            notifyError = notifyErr.message;
+            console.warn(`[AI-Bot] ⚠️ Could not send patient confirmation to ${patient_phone}:`, notifyErr.message);
+          }
+
+          // Admin confirmation — show bilingual format of what was (or would have been) sent
+          const adminReply = `✅ Token #${token.token_number} (${token.slot_name}) booked for ${patient_name} on ${target_date}. Arrival: ${token.arrival_time}.\n${patientNotified
+            ? `Patient notified via WhatsApp ✅\n\nMessage sent:\n${patientMsg}`
+            : `⚠️ Patient notification FAILED — ${notifyError || 'unknown error'}. Please contact them manually at ${patient_phone}.`}`;
+          session.appendHistory(phone, 'assistant', adminReply);
+          return adminReply;
+        }
+
         // Execute the pending mutation!
         if (pending.target_tab === 'Overrides') {
           const overrideRecord = {
@@ -285,12 +660,21 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
         lowerMsg.includes('consultation') ||
         lowerMsg.includes('open tomorrow') ||
         lowerMsg.includes('open today') ||
+        lowerMsg.includes('opening for today') ||
+        lowerMsg.includes('opening today') ||
+        lowerMsg.includes('one of opening') ||
+        lowerMsg.includes('one-of opening') ||
+        lowerMsg.includes('one off opening') ||
+        lowerMsg.includes('one-off opening') ||
+        lowerMsg.includes('extra day') ||
         lowerMsg.includes('open wednesday') ||
         lowerMsg.includes('open thursday') ||
         lowerMsg.includes('open friday') ||
         lowerMsg.includes('open saturday');
 
-      if ((hasBookingOpenChange || isBookingWindowIntent) && !isExplicitClinicOpening && overrideData.type !== 'closed') {
+      const isOpeningExtraDay = overrideData.type === 'open_extra_day' || isExplicitClinicOpening;
+
+      if ((hasBookingOpenChange || isBookingWindowIntent) && !isOpeningExtraDay && overrideData.type !== 'closed') {
         const opDays = currentSettings?.operating_days || ['Sunday'];
         let targetDayName = '';
         if (overrideData.target_date && /^\d{4}-\d{2}-\d{2}$/.test(overrideData.target_date)) {

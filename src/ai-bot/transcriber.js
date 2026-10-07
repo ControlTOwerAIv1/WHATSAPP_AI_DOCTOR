@@ -123,7 +123,74 @@ async function isAvailable() {
   }
 }
 
+const { spawn } = require('child_process');
+const path = require('path');
+
+let _serverProcess = null;
+
+/**
+ * Ensure the Whisper transcription server is running.
+ * If not already available, automatically spawns the Python server.
+ * @returns {Promise<boolean>}
+ */
+async function ensureServerRunning() {
+  const healthy = await isAvailable();
+  if (healthy) {
+    console.log(`[Transcriber] ✅ Whisper transcription server is already running on port ${WHISPER_PORT}`);
+    return true;
+  }
+
+  console.log('[Transcriber] 🚀 Starting Python Whisper transcription server...');
+  const scriptPath = path.join(__dirname, 'transcribe-server.py');
+
+  try {
+    _serverProcess = spawn('python', ['-u', scriptPath], {
+      cwd: process.cwd(),
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      stdio: 'pipe',
+      detached: false,
+    });
+
+    _serverProcess.stdout.on('data', (d) => {
+      const line = d.toString().trim();
+      if (line) console.log(`[Whisper] ${line}`);
+    });
+
+    _serverProcess.stderr.on('data', (d) => {
+      const line = d.toString().trim();
+      if (line) console.warn(`[Whisper] ${line}`);
+    });
+
+    _serverProcess.on('exit', (code) => {
+      console.warn(`[Transcriber] Whisper server process exited with code ${code}`);
+      _serverProcess = null;
+    });
+
+    // Wait up to 30 seconds for server to become healthy
+    const start = Date.now();
+    while (Date.now() - start < 30000) {
+      await new Promise(r => setTimeout(r, 1000));
+      if (await isAvailable()) {
+        console.log('[Transcriber] ✅ Whisper transcription server is ready and healthy!');
+        return true;
+      }
+    }
+    console.warn('[Transcriber] Whisper server did not become healthy within 30s');
+    return false;
+  } catch (err) {
+    console.error('[Transcriber] Failed to spawn Whisper server:', err.message);
+    return false;
+  }
+}
+
+process.on('exit', () => {
+  if (_serverProcess) {
+    try { _serverProcess.kill(); } catch (_) {}
+  }
+});
+
 module.exports = {
   transcribe,
   isAvailable,
+  ensureServerRunning,
 };

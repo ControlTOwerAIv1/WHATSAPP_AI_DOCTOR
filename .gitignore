@@ -18,3 +18,5 @@ nodemon.json
 .claude/
 .vscode/
 /data/*
+cloudflare_url.txt
+debug_*.js

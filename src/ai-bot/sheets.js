@@ -181,7 +181,7 @@ function _loadSeedScheduleConfig() {
     }
   }
   return {
-    clinic_name: 'Dr. AI Clinic',
+    clinic_name: 'Al Ramzan Shifakhana',
     operating_days: ['Sunday'],
     booking_window: {
       start_day: 'Saturday',

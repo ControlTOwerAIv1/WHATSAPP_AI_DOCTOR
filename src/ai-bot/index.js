@@ -56,6 +56,12 @@ function init({ rootDir }) {
   // Periodic session cleanup (every 10 minutes)
   setInterval(() => sessionStore.cleanupExpiredSessions(), 10 * 60 * 1000);
 
+  // Auto-start Whisper transcription server if not already running
+  const transcriber = require('./transcriber');
+  transcriber.ensureServerRunning().catch(err => {
+    console.warn('[AI-Bot] Whisper server startup warning:', err.message);
+  });
+
   console.log('[AI-Bot] ✅ AI Bot initialized and ready');
 }
 
@@ -212,6 +218,28 @@ async function handleIncomingMessage(parsed) {
       _recentlyProcessed.delete(first);
     }
 
+    // ── Check Bot Mode: in 'manual' mode, SKIP entire AI pipeline ──
+    const currentBotMode = store.getBotMode();
+    if (currentBotMode === 'manual') {
+      console.log(`[AI-Bot] ⏸️ Manual mode active — skipped AI pipeline for message from ${phone}. Awaiting manual reply.`);
+      if (_stores && jid) {
+        try {
+          if (_stores.chatStore && _stores.chatStore[jid]) {
+            _stores.chatStore[jid].awaitingManualReply = true;
+          }
+          if (typeof _stores.broadcastChats === 'function') {
+            _stores.broadcastChats();
+          }
+          if (typeof _stores.saveStore === 'function') {
+            _stores.saveStore();
+          }
+        } catch (storeErr) {
+          console.warn('[AI-Bot] Warning updating awaitingManualReply:', storeErr.message);
+        }
+      }
+      return;
+    }
+
     // ── Handle non-text messages ──
     const mediaType = parsed.mediaType;
     const isAudioOrVoice = mediaType === 'audio' || mediaType === 'voice';
@@ -343,6 +371,10 @@ async function handleIncomingMessage(parsed) {
     }
   } catch (err) {
     console.error('[AI-Bot] Error handling message:', err.message);
+    // In manual mode, NEVER send an automated error/fallback reply
+    if (store.getBotMode() === 'manual') {
+      return;
+    }
     // Best-effort: send an error reply
     try {
       const jid = parsed.jid || parsed.from;

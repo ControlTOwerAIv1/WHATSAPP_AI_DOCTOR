@@ -4,8 +4,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
-  <title>ECHO — Operator Dashboard</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>if (typeof io === 'undefined') { document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"><\/script>'); }</script>
   <link rel="stylesheet" href="dashboard.css">
   <link rel="icon" href="logo.png" type="image/png">
 </head>
@@ -148,7 +148,7 @@
 
   <!-- Top Bar -->
   <div class="topbar">
-    <div style="display:flex;align-items:center;gap:16px">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <div class="logo">
         <img src="logo.png" alt="ECHO Logo" class="logo-img">
         <span>ECHO</span>
@@ -160,14 +160,19 @@
         </div>
         <span id="statusText">Offline</span>
       </div>
+      <button class="bot-mode-toggle ai-mode" id="botModeToggle" onclick="toggleBotMode()" title="Toggle AI / Manual mode" aria-label="Toggle AI Mode">
+        <span class="bot-mode-dot"></span>
+        <span class="bot-mode-icon" id="botModeIcon">🤖</span>
+        <span class="bot-mode-text" id="botModeText">AI Mode: ON</span>
+      </button>
     </div>
     <div class="topbar-right">
       <span id="bridgeActionContainer"></span>
       <span id="whatsappControlContainer"></span>
       <button class="btn btn-ghost" id="notificationToggleBtn" onclick="toggleNotifications()" style="display:none; width: 34px; height: 34px; padding: 0; border-radius: 50%; justify-content: center; align-items: center;" aria-label="Toggle Notifications">🔔</button>
       <button class="btn btn-ghost" onclick="triggerImportContacts()">Import Contacts</button>
-      <button class="btn btn-ghost mobile-only-btn" onclick="switchTab('operators', document.querySelector('.panel-tab'))">Dashboard Info</button>
       <button class="btn btn-primary" onclick="switchToCreate()">+ New Group</button>
+      <button class="btn btn-ghost" onclick="handleLogout()" title="Sign out" style="color:var(--danger); border: 1px solid rgba(239,68,68,0.2); font-size: 12px; padding: 6px 12px;">Logout</button>
     </div>
     <button class="mobile-menu-toggle" id="mobileMenuToggle" onclick="toggleMobileMenu()" aria-label="Toggle menu">
       <svg viewBox="0 0 24 24" width="24" height="24">

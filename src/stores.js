@@ -192,6 +192,7 @@ function normalizeChat(chat = {}, operatorId = null) {
     participants: participants,
     readOnly: readOnly,
     left: readOnly,
+    awaitingManualReply: Boolean(chat.awaitingManualReply),
   };
 }
 
@@ -782,13 +783,14 @@ async function recordOutboundMessage({ jid, operator, result, message }) {
     status: result?.status !== undefined ? result.status : 1,
     raw: result?.message || null,
   });
+  const chat = ensureChatExists(jid);
+  chat.awaitingManualReply = false;
   if (operator?.id || operator?.name) {
-    const chat = ensureChatExists(jid);
     chat.lastHandledByOperatorId = operator.id || null;
     chat.lastHandledByOperatorName = operator.name || operator.id;
     chat.lastHandledAt = Date.now();
-    database.upsertChat(chat);
   }
+  database.upsertChat(chat);
   updateChatPreview(jid, sentMsg.content, timestamp, true, sentMsg.status);
   saveStore();
   broadcastChats();

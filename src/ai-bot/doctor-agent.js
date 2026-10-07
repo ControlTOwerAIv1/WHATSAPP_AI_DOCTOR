@@ -14,7 +14,7 @@ const session = require('./session');
 const schedule = require('./schedule');
 const { getCurrentTime } = require('./clock');
 
-const DOCTOR_SYSTEM = `You are an AI assistant for doctors at Dr. AI Clinic. You are speaking with a registered doctor.
+const DOCTOR_SYSTEM = `You are an AI assistant for doctors at Al Ramzan Shifakhana. You are speaking with a registered doctor.
 
 Your capabilities:
 - You have live access to the clinic's appointment schedule and bookings database.
@@ -33,6 +33,9 @@ Important instructions:
 
 function _formatDoctorTitle(name) {
   const clean = (name || '').trim();
+  if (!clean || clean.toLowerCase() === 'admin') {
+    return 'Admin';
+  }
   if (/^dr\.?\s+/i.test(clean)) {
     return clean;
   }
@@ -65,8 +68,13 @@ async function handleDoctorMessage(phone, message, doctorInfo) {
     if (isUpcomingOverview) {
       reply = await _showUpcomingSchedule(doctorInfo);
     } else if (resolvedDate) {
-      // Specific date requested ("this Sunday", "tomorrow", "today", or explicit date)
-      reply = await getBookingsForDate(resolvedDate, doctorInfo);
+      // Specific date requested ("this Sunday", "tomorrow", "today", or explicit date).
+      // If the resolved date is today (a non-clinic day), fall back to the next operating date
+      // so the doctor sees the actual upcoming bookings, not an empty non-clinic day.
+      const sched = await schedule.getEffectiveSchedule(resolvedDate);
+      const effectiveDate = sched.is_open ? resolvedDate : await schedule.findNextOperatingDate(currentTime);
+      reply = await getBookingsForDate(effectiveDate, doctorInfo);
+
     } else if (lower.includes('token') || lower.includes('appointment') || lower.includes('patient') || lower.includes('slot') || lower.includes('booking') || lower.includes('detail') || lower.includes('name') || lower.includes('booked') || lower.includes('schedule') || lower.includes('who is') || lower.includes('list')) {
       // General booking/token query without a specific date:
       // Default to next operating date (or today if open)
@@ -101,14 +109,27 @@ async function handleDoctorMessage(phone, message, doctorInfo) {
  */
 async function getBookingsForDate(targetDate, doctorInfo) {
   const currentTime = getCurrentTime();
-  const todayStr = currentTime.toISOString().split('T')[0];
-  const dateStr = targetDate || todayStr;
+  // formatDateToYYYYMMDD is already IST-aware (fixed in schedule.js)
+  const todayStr = schedule.formatDateToYYYYMMDD(currentTime);
+  const nextOpDate = await schedule.findNextOperatingDate(currentTime);
+  const dateStr = targetDate || nextOpDate;
   const effectiveSchedule = await schedule.getEffectiveSchedule(dateStr);
-  const isToday = (dateStr === todayStr);
 
-  const d = new Date(`${dateStr}T12:00:00`);
-  const dayName = isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-US', { weekday: 'long' });
-  const dateLabel = isToday ? `today (${dateStr})` : `${dayName ? `${dayName}, ` : ''}${dateStr}`;
+  // Label "today" when the date is the IST calendar date; label "next clinic day" when
+  // it's the upcoming operating date but not literally today's calendar date.
+  const isCalendarToday = (dateStr === todayStr);
+  const isNextOpDate = (dateStr === nextOpDate);
+
+  const d = new Date(`${dateStr}T12:00:00Z`);
+  const dayName = isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Asia/Kolkata' });
+  let dateLabel;
+  if (isCalendarToday) {
+    dateLabel = `today (${dateStr})`;
+  } else if (isNextOpDate) {
+    dateLabel = `${dayName ? `${dayName}, ` : ''}${dateStr} (next clinic day)`;
+  } else {
+    dateLabel = `${dayName ? `${dayName}, ` : ''}${dateStr}`;
+  }
 
   if (!effectiveSchedule.is_open) {
     return `Good day, ${_formatDoctorTitle(doctorInfo.name)}.\n\nThe clinic is closed on ${dateLabel}.`;

@@ -103,7 +103,7 @@ async function classifyIntent(message, appointmentStage) {
 
 Classify the input message into exactly one of these labels:
 1. "general": Greetings, small talk, asking about doctor availability, asking about clinic timings, or general inquiries (where the user has NOT explicitly asked to book).
-2. "appointment": EXPLICIT or IMPLICIT booking requests (e.g., "book this slot", "schedule an appointment", "token chahiye", "ek token de do", "Sunday ka token", "appointment chahiye", "naam likh do", "morning token", "afternoon token", "subah ka token", "I want to see Dr. Sarah", "Yes, I'd like to proceed", "Sounds good", "I'll take the morning slot", "Book it").
+2. "appointment": EXPLICIT or IMPLICIT booking requests (e.g., "book this slot", "schedule an appointment", "token chahiye", "ek token de do", "Sunday ka token", "appointment chahiye", "naam likh do", "morning token", "afternoon token", "subah ka token", "I want to see the doctor", "Yes, I'd like to proceed", "Sounds good", "I'll take the morning slot", "Book it").
 3. "medicine": Medications, dosage, prescriptions, or refills.
 4. "clinical_question": General medical questions or asking for medical advice WITHOUT asking for an appointment.
 
@@ -134,7 +134,7 @@ Admin message: "${message}"
 Classify into exactly one of these labels:
 - "confirm": The admin is agreeing, confirming, or authorizing the change in English, Hindi, Urdu, or Hinglish (e.g., "yes", "yeah", "yep", "sure", "proceed", "haan", "ha", "theek hai", "sahi hai", "bilkul", "kar do", "ok", "okay", "confirm", "proceed please", "chalega", "yes do it").
 - "cancel": The admin is rejecting, cancelling, or telling not to proceed in English, Hindi, Urdu, or Hinglish (e.g., "no", "cancel", "stop", "abort", "nahi", "mat karo", "nah", "never mind", "cancel karo", "rehney do").
-- "other": The admin sent something unrelated, a new question, or a completely different command (e.g., "what time is Sunday", "change tokens to 50", "who is Dr. Sarah", "hello").
+- "other": The admin sent something unrelated, a new question, or a completely different command (e.g., "what time is Sunday", "change tokens to 50", "who is on duty", "hello").
 
 CRITICAL: Output ONLY the single word: confirm, cancel, or other.`;
 
@@ -162,32 +162,37 @@ function resolveRelativeDate(phrase, refDateISO) {
 
   const lower = phrase.toLowerCase().trim();
 
-  // If already a valid YYYY-MM-DD
+  // If already a valid YYYY-MM-DD, return it directly
   const directIso = lower.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   if (directIso) return directIso[1];
 
-  const format = (d) => {
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
+  // All date arithmetic must be done in IST (UTC+5:30) so that "today"
+  // for an Indian user at 11 PM IST isn't treated as the previous UTC day.
+  const IST_MS = 5.5 * 60 * 60 * 1000;
+
+  // Shift ref into IST by adding the offset, then use UTC accessors.
+  const refIST = new Date(ref.getTime() + IST_MS);
+
+  const format = (istDate) => {
+    const yyyy = istDate.getUTCFullYear();
+    const mm = String(istDate.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(istDate.getUTCDate()).padStart(2, '0');
     return `${yyyy}-${mm}-${dd}`;
   };
 
-  const dayOfWeek = ref.getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+  const dayOfWeek = refIST.getUTCDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat (in IST)
 
   if (lower.includes('today')) {
-    return format(ref);
+    return format(refIST);
   }
   if (lower.includes('tomorrow')) {
-    const d = new Date(ref);
-    d.setDate(d.getDate() + 1);
+    const d = new Date(refIST.getTime() + 24 * 60 * 60 * 1000);
     return format(d);
   }
   if (lower.includes('this weekend')) {
     // Upcoming weekend day (defaulting to Sunday)
     const daysUntilSunday = (7 - dayOfWeek) % 7 || 7;
-    const d = new Date(ref);
-    d.setDate(d.getDate() + daysUntilSunday);
+    const d = new Date(refIST.getTime() + daysUntilSunday * 24 * 60 * 60 * 1000);
     return format(d);
   }
 
@@ -203,14 +208,14 @@ function resolveRelativeDate(phrase, refDateISO) {
         // e.g. "Wednesday" said on Wednesday could refer to next week if afternoon/past
         diff = 7;
       }
-      const d = new Date(ref);
-      d.setDate(d.getDate() + diff);
+      const d = new Date(refIST.getTime() + diff * 24 * 60 * 60 * 1000);
       return format(d);
     }
   }
 
   return null;
 }
+
 
 /**
  * Classify admin message intent as QUERY or COMMAND using semantic tone understanding (Step 9).
@@ -373,19 +378,28 @@ Instructions:
    - The "target_date" is ALWAYS the date of the CLINIC CONSULTATION (the date patients visit the clinic and see the doctor), NEVER the date or time when bookings open.
    - The "booking_opens_at" field specifies WHEN patients can start booking (e.g. "Saturday 20:30", "Tuesday 21:00", etc.).
    
-   A. Booking Window / Booking Opening Commands:
-   If the admin/doctor says:
+   A. Booking Window / Booking Opening Commands (WITHOUT opening clinic on that day):
+   If the admin/doctor ONLY wants to change when bookings open for the regular clinic:
    - "Start taking appointments from 12th 20:30 pm"
    - "Start taking appointments from 8:30 PM today"
    - "Open booking early at 20:30"
    - "Start accepting bookings from today at 20:30"
    - "Open bookings from 12th at 8:30 PM"
-   In all these cases, the admin is changing WHEN bookings open for the upcoming clinic session (${nextOperatingDateStr}).
-   Therefore:
+   In these cases, the clinic remains on its regular day (${nextOperatingDateStr}) and ONLY the booking opening time changes:
    - target_date: MUST be "${nextOperatingDateStr}" (the upcoming clinic consultation day, e.g. Sunday), NOT the booking day (${todayStr})!
    - booking_opens_at: "${refDayName} 20:30" (or the specified day and time).
    - type: "capacity_change" (or "open_extra_day" if that clinic day wasn't previously open).
    - confirmation_prompt: Clearly explain that bookings for ${nextOperatingDateStr} (upcoming clinic) will open at the specified time, specifying that it will write a row to the **Overrides** tab, and asking "Should I proceed? Reply 'yes' to confirm."
+
+   NOTE ON CLINIC OPENINGS:
+   If the user asks to OPEN THE CLINIC on a specific day (e.g. "create a one off opening for today and open bookings from 10 am", "open clinic today", "extra clinic opening today"), this is an EXTRA CLINIC OPENING for that day:
+   - target_date: "${todayStr}" (or the mentioned day)
+   - type: "open_extra_day"
+   - booking_opens_at: as specified (e.g. "${refDayName} 10:00")
+   - consultation_start: "11:00"
+   - consultation_end: "18:30"
+   - token_cap: 50
+   - confirmation_prompt: Summarize that the clinic will be open on that date for consultations with bookings open at the specified time.
 
    B. Clinic Operating / Closure / Capacity Commands:
    Calculate target_date based on the consultation day mentioned:
@@ -395,8 +409,8 @@ Instructions:
    - "this weekend" -> "${upcomingSundayStr}"
    - "next Wednesday" -> "${relativeDateMentioned || 'calculate upcoming Wednesday'}"
    - type: "open_extra_day", "closed", or "capacity_change"
-     - If the doctor says they are not coming in ("not going to be in today", "skip today, I'm out", "close today"), type is "closed".
-     - If the doctor or admin says not to take anyone in afternoon or change tokens, type is "capacity_change" or "closed".
+   - If the doctor says they are not coming in ("not going to be in today", "skip today, I'm out", "close today"), type is "closed".
+   - If the doctor or admin says not to take anyone in afternoon or change tokens, type is "capacity_change" or "closed".
    - booking_opens_at: e.g. "Tuesday 9:00 PM" or "Tuesday 21:00" or as specified.
    - consultation_start: e.g. "11:00" or as specified.
    - consultation_end: e.g. "18:30" or as specified.
@@ -439,14 +453,31 @@ Return ONLY valid JSON matching this schema:
     // Fallback validation: ensure target_date is formatted YYYY-MM-DD and matches calendar
     if (parsed.target_tab === 'Overrides' && parsed.override_data) {
       const lowerMsg = message.toLowerCase();
+      const isExplicitClinicOpening =
+        lowerMsg.includes('open clinic') ||
+        lowerMsg.includes('extra clinic') ||
+        lowerMsg.includes('clinic open') ||
+        lowerMsg.includes('consultation') ||
+        lowerMsg.includes('open tomorrow') ||
+        lowerMsg.includes('open today') ||
+        lowerMsg.includes('opening for today') ||
+        lowerMsg.includes('opening today') ||
+        lowerMsg.includes('one of opening') ||
+        lowerMsg.includes('one-of opening') ||
+        lowerMsg.includes('one off opening') ||
+        lowerMsg.includes('one-off opening') ||
+        lowerMsg.includes('extra day');
+
       const isBookingWindowCmd =
-        lowerMsg.includes('start taking appointment') ||
+        (lowerMsg.includes('start taking appointment') ||
         lowerMsg.includes('open booking') ||
         lowerMsg.includes('bookings open') ||
         lowerMsg.includes('booking opens') ||
         lowerMsg.includes('start booking') ||
         lowerMsg.includes('accept appointment') ||
-        lowerMsg.includes('accepting appointment');
+        lowerMsg.includes('accepting appointment')) &&
+        parsed.override_data.type !== 'open_extra_day' &&
+        !isExplicitClinicOpening;
 
       if (!isBookingWindowCmd && relativeDateMentioned) {
         parsed.override_data.target_date = relativeDateMentioned;
@@ -469,6 +500,120 @@ Return ONLY valid JSON matching this schema:
 }
 
 /**
+ * Parse an ADMIN_BOOK command — "book a token for <name>, phone <number>, for <date>".
+ * Returns structured patient booking intent. Returns a partial object (with null fields)
+ * if only some info is present. Returns null only if Claude completely fails to respond.
+ *
+ * @param {string} message
+ * @param {string} currentDateTimeISO - e.g. "2026-09-29T16:00:00"
+ * @param {string} nextOperatingDateStr - YYYY-MM-DD of next operating day
+ * @returns {Promise<{ patient_name: string|null, patient_phone: string|null, target_date: string|null, slot_preference: string|null }|null>}
+ */
+async function parseAdminBookCommand(message, currentDateTimeISO, nextOperatingDateStr) {
+  const prompt = `You are a clinical AI parsing an admin request to manually book an appointment on behalf of a patient.
+
+Current date/time: ${currentDateTimeISO}
+Next scheduled operating clinic date: ${nextOperatingDateStr}
+
+Admin's message: "${message}"
+
+Extract the following fields from the message using semantic understanding — the admin may phrase things naturally (e.g. "book for david", "his number is 919876543210", "it's david kumar"):
+- patient_name: The patient's full name if mentioned anywhere in the message, or null if not present at all.
+  IMPORTANT: Extract ANY human name mentioned, even if embedded in a sentence (e.g. "book for david" -> "david", "it's david kumar" -> "david kumar").
+- patient_phone: The patient's phone number, digits only, or null if not present (e.g. "919876543210").
+  Strip all spaces, dashes, plus signs, and parentheses. Include country code if present.
+- target_date: The requested appointment date in YYYY-MM-DD format, or null if not specified.
+- slot_preference: "morning", "afternoon", or null.
+
+Return ONLY valid JSON:
+{
+  "patient_name": "Full Name or null",
+  "patient_phone": "919876543210 or null",
+  "target_date": "YYYY-MM-DD or null",
+  "slot_preference": "morning|afternoon|null"
+}
+
+Rules:
+- If the admin says "tomorrow", resolve relative to ${currentDateTimeISO}.
+- If no date is mentioned, set target_date to null.
+- If no slot is mentioned, set slot_preference to null.
+- Strip all non-digit characters from phone numbers.
+- Return null (JSON null, not the string "null") for any field that cannot be determined from the message.
+- NEVER return the string "null" for a field — use JSON null.`;
+
+  const result = await chat('', prompt, { temperature: 0, maxTokens: 200 });
+  if (!result) return null;
+
+  try {
+    const cleaned = result.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    // Normalise: treat string "null" as actual null
+    const norm = (v) => (v === 'null' || v === '' ? null : v || null);
+    return {
+      patient_name: norm(parsed.patient_name),
+      patient_phone: norm(parsed.patient_phone),
+      target_date: norm(parsed.target_date),
+      slot_preference: norm(parsed.slot_preference),
+    };
+  } catch (err) {
+    console.error('[AI-Bot] Failed to parse admin book command JSON:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Classify whether an admin message is a correction to a pending ADMIN_BOOK draft.
+ * Detects messages like "wrong number", "change the phone to X", "that's not david, it's david kumar".
+ *
+ * @param {string} message
+ * @param {Object} draftData - Current draft: { patient_name, patient_phone, target_date, slot_preference }
+ * @returns {Promise<{ is_correction: boolean, field: 'name'|'phone'|'date'|null, new_value: string|null }>}
+ */
+async function classifyAdminBookCorrection(message, draftData) {
+  const prompt = `You are evaluating a WhatsApp message from a clinic admin who is in the middle of creating a patient booking draft.
+
+Current booking draft:
+- Patient name: ${draftData.patient_name || '(none)'}
+- Patient phone: ${draftData.patient_phone || '(none)'}
+- Date: ${draftData.target_date || '(none)'}
+
+Admin's new message: "${message}"
+
+Is this message a CORRECTION to the booking draft? Corrections include:
+- Correcting the phone number (e.g. "wrong number", "change phone to 919876500000", "the number is actually...", "that's the wrong number, use X")
+- Correcting the patient name (e.g. "that's not david, it's david kumar", "wrong name, it's X", "the name is X not Y", "change name to X")
+- Correcting the date (e.g. "change date to Sunday", "make it next week instead")
+
+NOT a correction:
+- Confirming the booking ("yes", "proceed", "ok")
+- Cancelling ("no", "cancel")
+- Unrelated admin commands about clinic schedule/overrides
+
+Return ONLY valid JSON:
+{
+  "is_correction": true/false,
+  "field": "name" | "phone" | "date" | null,
+  "new_value": "the corrected value as a clean string, digits only for phone" | null
+}`;
+
+  const result = await chat('', prompt, { temperature: 0, maxTokens: 150 });
+  if (!result) return { is_correction: false, field: null, new_value: null };
+
+  try {
+    const cleaned = result.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    return {
+      is_correction: !!parsed.is_correction,
+      field: parsed.field || null,
+      new_value: parsed.new_value || null,
+    };
+  } catch (err) {
+    console.error('[AI-Bot] Failed to parse admin book correction JSON:', err.message);
+    return { is_correction: false, field: null, new_value: null };
+  }
+}
+
+/**
  * Answer an admin QUERY based on the effective schedule context.
  * Never writes anything.
  *
@@ -477,13 +622,14 @@ Return ONLY valid JSON matching this schema:
  * @returns {Promise<string>}
  */
 async function answerAdminQuery(message, scheduleContext) {
-  const systemPrompt = `You are an AI assistant for the clinic administrator at Dr. AI Clinic.
+  const systemPrompt = `You are an AI assistant for the clinic administrator at Al Ramzan Shifakhana.
 You answer administrative schedule and operating queries clearly and accurately based on the clinic's current effective schedule.
 
 Current Effective Schedule Context:
 ${JSON.stringify(scheduleContext, null, 2)}
 
 Rules:
+- Address the user as "Admin" if addressing them. Never use any personal names or placeholder names.
 - Answer the admin's question directly, concisely, and warmly.
 - State relevant opening days, booking window hours, consultation timings, and token caps accurately.
 - Keep response under 100 words.`;
@@ -557,6 +703,8 @@ module.exports = {
   classifyAdminQueryType,
   classifyAdminConfirmation,
   parseAdminCommand,
+  parseAdminBookCommand,
+  classifyAdminBookCorrection,
   answerAdminQuery,
   resolveRelativeDate,
   validateName,

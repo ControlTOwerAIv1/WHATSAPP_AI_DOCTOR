@@ -110,7 +110,16 @@ function _runMigrations(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_sessions_expires
       ON dashboard_sessions(expires_at);
+
+    CREATE TABLE IF NOT EXISTS bot_settings (
+      id          INTEGER PRIMARY KEY CHECK (id = 1),
+      mode        TEXT NOT NULL DEFAULT 'ai',
+      updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
+
+  // Ensure default bot_settings row exists (id=1, mode='ai')
+  db.prepare(`INSERT OR IGNORE INTO bot_settings (id, mode) VALUES (1, 'ai')`).run();
 
   // Add columns that may be missing from an existing appointments_tokens table
   _addColumnIfMissing(db, 'appointments_tokens', 'status',     "TEXT NOT NULL DEFAULT 'booked'");
@@ -327,8 +336,9 @@ function getBookingsInRange(fromDate, toDate, agentId = 'default') {
       COALESCE(created_at, booked_at, '') AS created_at
     FROM appointments_tokens
     WHERE sunday_date >= ? AND sunday_date <= ?
+      AND COALESCE(agent_id, 'default') = ?
     ORDER BY sunday_date ASC, token_number ASC
-  `).all(fromDate, toDate);
+  `).all(fromDate, toDate, agentId);
 }
 
 // ─── Export log ──────────────────────────────────────────────────────────────
@@ -412,6 +422,33 @@ function isLoginRateLimited(ip, username) {
   return false;
 }
 
+// ─── Bot Mode Settings (AI Mode vs Manual Mode) ─────────────────────────────
+
+function getBotMode() {
+  try {
+    const db = getDb();
+    const row = db.prepare('SELECT mode FROM bot_settings WHERE id = 1').get();
+    return row?.mode || 'ai';
+  } catch (err) {
+    console.warn('[Store] getBotMode error:', err.message);
+    return 'ai';
+  }
+}
+
+function setBotMode(mode) {
+  const normalized = mode === 'manual' ? 'manual' : 'ai';
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO bot_settings (id, mode, updated_at)
+    VALUES (1, @mode, datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET
+      mode = excluded.mode,
+      updated_at = excluded.updated_at
+  `).run({ mode: normalized });
+  console.log(`[Store] Bot mode switched to: ${normalized}`);
+  return normalized;
+}
+
 module.exports = {
   getDb,
   getSettings,
@@ -426,4 +463,6 @@ module.exports = {
   pruneExpiredSessions,
   recordLoginAttempt,
   isLoginRateLimited,
+  getBotMode,
+  setBotMode,
 };

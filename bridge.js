@@ -31,6 +31,7 @@ const whatsapp = require('./src/cloudapi');
 const { registerRoutes } = require('./src/routes');
 const backup = require('./src/backup');
 const cookieParser = require('cookie-parser');
+const store = require('./src/ai-bot/store');
 
 const app = express();
 const httpServer = createServer(app);
@@ -41,32 +42,48 @@ const io = new Server(httpServer, {
 
 app.use(cors());
 
-// Capture raw body for HMAC signature verification (Part 3 — webhook hardening)
-// Must be registered BEFORE express.json() so raw bytes are preserved.
-app.use((req, res, next) => {
-  if (req.path === '/webhook' && req.method === 'POST') {
-    let chunks = [];
-    req.on('data', c => chunks.push(c));
-    req.on('end', () => {
-      req.rawBody = Buffer.concat(chunks);
-      try { req.body = JSON.parse(req.rawBody.toString('utf8')); } catch (_) { req.body = {}; }
-      next();
-    });
-  } else {
-    next();
+// Parse JSON bodies and capture raw body buffer for HMAC signature verification
+app.use(express.json({
+  limit: '50mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
   }
-});
-app.use(express.json());
+}));
+app.use(express.urlencoded({
+  extended: true,
+  limit: '50mb',
+  verify: (req, res, buf) => {
+    if (!req.rawBody) req.rawBody = buf;
+  }
+}));
 app.use(cookieParser());
 
 // Serve the operator dashboard (and its css/js) from public/.
 const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
 app.use(express.static(PUBLIC_DIR));
 const DASHBOARD_FILE = path.join(PUBLIC_DIR, 'dashboard.html');
-app.get('/', (req, res) => {
-  res.sendFile(DASHBOARD_FILE);
+const LOGIN_FILE = path.join(PUBLIC_DIR, 'login.html');
+
+app.get('/login', (req, res) => {
+  const token = req.cookies?.echo_session;
+  if (token && store.getSession(token)) {
+    return res.redirect('/');
+  }
+  res.sendFile(LOGIN_FILE);
 });
-app.get('/dashboard.html', (req, res) => {
+
+app.get('/login.html', (req, res) => {
+  res.redirect('/login');
+});
+
+app.get(['/', '/dashboard.html'], (req, res) => {
+  const adminHash = process.env.ECHO_ADMIN_PASSWORD_HASH || '';
+  if (adminHash) {
+    const token = req.cookies?.echo_session;
+    if (!token || !store.getSession(token)) {
+      return res.redirect('/login');
+    }
+  }
   res.sendFile(DASHBOARD_FILE);
 });
 

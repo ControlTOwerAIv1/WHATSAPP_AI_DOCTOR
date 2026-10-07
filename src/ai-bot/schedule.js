@@ -12,7 +12,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const Database = require('better-sqlite3');
 const { getCurrentTime } = require('./clock');
 const store = require('./store');
 
@@ -112,13 +111,28 @@ function _setLastEffectiveSchedule(sched) {
   _lastEffectiveScheduleTime = Date.now();
 }
 
+// IST offset in milliseconds (UTC+5:30)
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
 /**
- * Format a Date object into YYYY-MM-DD.
+ * Convert a Date to an equivalent Date object shifted to IST local time.
+ * All subsequent local-time accessors (.getFullYear, .getMonth, .getDate, .getDay, etc.)
+ * will return IST values regardless of the server's own timezone.
+ */
+function _toIST(d) {
+  return new Date(d.getTime() + IST_OFFSET_MS);
+}
+
+/**
+ * Format a Date object into YYYY-MM-DD using IST date parts.
+ * Always use this instead of direct getFullYear/getMonth/getDate calls so the
+ * result reflects the clinic's India timezone, not the server's UTC clock.
  */
 function formatDateToYYYYMMDD(d) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
+  const ist = _toIST(d);
+  const yyyy = ist.getUTCFullYear();
+  const mm = String(ist.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(ist.getUTCDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
 }
 
@@ -163,7 +177,7 @@ async function getEffectiveSchedule(date = null) {
     // Case A: Clinic Closed on this date
     if (type === 'closed') {
       const closedSched = {
-        clinic_name: 'Dr. AI Clinic',
+        clinic_name: 'Al Ramzan Shifakhana',
         target_date: targetDateStr,
         is_override: true,
         override_type: 'closed',
@@ -211,7 +225,7 @@ async function getEffectiveSchedule(date = null) {
     const bookingCloseTime = settings.booking_close_time || '18:00';
 
     const effectiveOverride = {
-      clinic_name: 'Dr. AI Clinic',
+      clinic_name: 'Al Ramzan Shifakhana',
       target_date: targetDateStr,
       is_override: true,
       override_type: type || 'open_extra_day',
@@ -271,7 +285,7 @@ async function getEffectiveSchedule(date = null) {
   // 2. Default: standard schedule from Settings
   const primaryOpDay = settings.operating_days[0] || 'Sunday';
   const standardSched = {
-    clinic_name: 'Dr. AI Clinic',
+    clinic_name: 'Al Ramzan Shifakhana',
     target_date: targetDateStr,
     is_override: false,
     override_type: null,
@@ -341,7 +355,7 @@ function getEffectiveScheduleSync(date = null) {
   }
   // Fallback defaults matching settings
   return {
-    clinic_name: 'Dr. AI Clinic',
+    clinic_name: 'Al Ramzan Shifakhana',
     target_date: getTargetSundayDate(),
     is_override: false,
     is_open: true,
@@ -406,8 +420,10 @@ function getScheduleConfig(date = null) {
 function _checkWindowOpenForSchedule(currentTime, config) {
   if (!config || !config.is_open) return false;
 
-  const currentDayIndex = currentTime.getDay();
-  const currentMinutes = currentTime.getHours() * 60 + currentTime.getMinutes();
+  // All day/time comparisons must use IST, not server local time.
+  const ist = _toIST(currentTime);
+  const currentDayIndex = ist.getUTCDay();
+  const currentMinutes = ist.getUTCHours() * 60 + ist.getUTCMinutes();
 
   const startDay = config.booking_window?.start_day || 'Saturday';
   const startMinutes = parseTimeToMinutes(config.booking_window?.start_time || '21:00');
@@ -484,15 +500,16 @@ async function findNextOperatingDate(currentTime = getCurrentTime()) {
   }
 
   // 2. Second priority: If no booking window is open right now, pick the nearest upcoming operating date
+  const istNow = _toIST(currentTime);
+  const istCurrentMinutes = istNow.getUTCHours() * 60 + istNow.getUTCMinutes();
   for (const dateStr of candidateDates) {
     if (dateStr > currentYYYYMMDD) {
       return dateStr;
     }
-    // If dateStr === currentYYYYMMDD (today), check if consultation hours have already finished
+    // If dateStr === currentYYYYMMDD (today in IST), check if consultation hours have already finished
     const todaySched = await getEffectiveSchedule(dateStr);
     const endMinutes = parseTimeToMinutes(todaySched.slots?.afternoon?.end_time || '18:30');
-    const currentMinutes = currentTime.getHours() * 60 + currentTime.getMinutes();
-    if (currentMinutes < endMinutes) {
+    if (istCurrentMinutes < endMinutes) {
       return dateStr;
     }
   }
@@ -525,7 +542,7 @@ function renderPromptTemplate(targetDate = null) {
   const bookingWindow = config.booking_window || {};
 
   const replacements = {
-    '{{clinic_name}}': config.clinic_name || 'Dr. AI Clinic',
+    '{{clinic_name}}': config.clinic_name || 'Al Ramzan Shifakhana',
     '{{operating_days}}': (config.operating_days || ['Sunday']).join(', '),
     '{{operating_days_display}}': config.operating_days_display || 'Sundays',
     '{{booking_window_start}}': bookingWindow.start_display || 'Saturday 9:00 PM',
@@ -613,17 +630,20 @@ async function isBookingWindowOpen(currentTime = getCurrentTime(), targetDate = 
   const effectiveTargetDate = targetDate || await findNextOperatingDate(currentTime);
   const config = await getEffectiveSchedule(effectiveTargetDate);
 
+  const istNow = _toIST(currentTime);
+  const istDay = istNow.getUTCDay();
+  const istHour = istNow.getUTCHours();
+
   if (!config.is_open) {
     return {
       open: false,
       message: config.booking_window?.closed_message || 'The clinic is closed on this date.',
       targetSundayDate: effectiveTargetDate,
-      currentDay: currentTime.getDay(),
-      currentHour: currentTime.getHours(),
+      currentDay: istDay,
+      currentHour: istHour,
     };
   }
 
-  const currentDayIndex = currentTime.getDay();
   const open = _checkWindowOpenForSchedule(currentTime, config);
 
   const closedMessage = config.booking_window?.closed_message ||
@@ -633,51 +653,41 @@ async function isBookingWindowOpen(currentTime = getCurrentTime(), targetDate = 
     open,
     message: open ? 'Booking window is OPEN' : closedMessage,
     targetSundayDate: effectiveTargetDate,
-    currentDay: currentDayIndex,
-    currentHour: currentTime.getHours(),
+    currentDay: istDay,
+    currentHour: istHour,
   };
 }
+
 
 /**
  * Determine the date (YYYY-MM-DD) of the Sunday relevant to the current time.
  */
 function getTargetSundayDate(currentTime = getCurrentTime()) {
-  const d = new Date(currentTime.getTime());
-  const day = d.getDay();
-  const diffDays = (7 - day) % 7; // 0 for Sunday, 1 for Saturday (diff=1), etc.
-  d.setDate(d.getDate() + diffDays);
-  return formatDateToYYYYMMDD(d);
+  // Use IST day-of-week so that e.g. Saturday evening in IST isn't treated as Sunday in UTC.
+  const ist = _toIST(currentTime);
+  const day = ist.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat in IST
+  const diffDays = (7 - day) % 7; // 0 if already Sunday, otherwise days until next Sunday
+  // Build a new UTC instant that is `diffDays` ahead in IST calendar
+  const targetIST = new Date(ist.getTime() + diffDays * 24 * 60 * 60 * 1000);
+  const yyyy = targetIST.getUTCFullYear();
+  const mm = String(targetIST.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(targetIST.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 // ─── Durable Token Storage (SQLite + JSON Fallback) ─────────────────
+// NOTE: Uses store.getDb() — the single shared connection that runs all migrations.
+// This guarantees agent_id, status, created_at columns exist before first use.
 
-let _db = null;
 const TOKENS_JSON_PATH = path.join(process.cwd(), 'data', 'tokens.json');
 
 function _getDatabase() {
-  if (_db) return _db;
   try {
-    const dbPath = path.join(process.cwd(), 'relay.sqlite');
-    _db = new Database(dbPath);
-    _db.exec(`
-      CREATE TABLE IF NOT EXISTS appointments_tokens (
-        sunday_date TEXT NOT NULL,
-        token_number INTEGER NOT NULL,
-        slot_name TEXT NOT NULL,
-        token_in_slot INTEGER NOT NULL,
-        patient_phone TEXT NOT NULL,
-        patient_name TEXT NOT NULL,
-        arrival_time TEXT NOT NULL,
-        condition TEXT,
-        booked_at TEXT NOT NULL,
-        PRIMARY KEY (sunday_date, token_number)
-      );
-      CREATE INDEX IF NOT EXISTS idx_tokens_phone ON appointments_tokens(patient_phone, sunday_date);
-    `);
+    return store.getDb();
   } catch (err) {
     console.warn('[AI-Bot] SQLite init warning for tokens table, using JSON fallback:', err.message);
+    return null;
   }
-  return _db;
 }
 
 function _loadTokensFromDisk() {

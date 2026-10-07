@@ -280,6 +280,9 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   // ── Session authentication middleware (protects all /api/* except auth routes) ─
 
   function _requireSession(req, res, next) {
+    const adminHash = _getAdminHash();
+    if (!adminHash) return next();
+
     // Public routes: webhook verification is handled separately; auth endpoints are public
     const PUBLIC_PREFIXES = ['/api/auth/', '/api/webhook', '/api/health'];
     if (PUBLIC_PREFIXES.some(p => req.path.startsWith(p))) return next();
@@ -330,6 +333,18 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   app.get('/api/health', (req, res) =>
     res.json({ uptime: process.uptime(), status: whatsapp.getStatus(), operators: operators.size, chats: Object.keys(stores.chatStore).length })
   );
+  app.get('/api/bot/mode', (req, res) => {
+    res.json({ mode: store.getBotMode() });
+  });
+  app.post('/api/bot/mode', (req, res) => {
+    const { mode } = req.body || {};
+    if (!mode || (mode !== 'ai' && mode !== 'manual')) {
+      return res.status(400).json({ error: "mode must be 'ai' or 'manual'" });
+    }
+    const newMode = store.setBotMode(mode);
+    io.emit('bot_mode_changed', { mode: newMode });
+    res.json({ success: true, mode: newMode });
+  });
   app.get('/api/operators', (req, res) =>
     res.json(Array.from(operators.values()).map((op) => ({ id: op.id, name: op.name, connectedAt: op.connectedAt })))
   );
@@ -839,8 +854,11 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   });
 
   // WebSocket (operator dashboard <-> server)
-  // Session guard: reject unauthenticated socket.io handshakes
+  // Session guard: reject unauthenticated socket.io handshakes (if auth is configured)
   io.use((socket, next) => {
+    const adminHash = _getAdminHash();
+    if (!adminHash) return next();
+
     const cookies = socket.handshake.headers.cookie || '';
     const match   = cookies.match(/echo_session=([^;]+)/);
     const token   = match ? match[1] : null;
@@ -1005,6 +1023,18 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
 
     socket.on('get_flagged_messages', () => {
       socket.emit('flagged_list', stores.getFlaggedMessages());
+    });
+
+    socket.on('get_bot_mode', () => {
+      socket.emit('bot_mode_changed', { mode: store.getBotMode() });
+    });
+
+    socket.on('set_bot_mode', (data) => {
+      const mode = data?.mode;
+      if (mode === 'ai' || mode === 'manual') {
+        const newMode = store.setBotMode(mode);
+        io.emit('bot_mode_changed', { mode: newMode });
+      }
     });
 
     socket.on('send_message', async (data) => {

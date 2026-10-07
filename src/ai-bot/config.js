@@ -33,9 +33,13 @@ function init(rootDir) {
   }
 
   // Build config from env
+  const rawAdmin = process.env.ADMIN_PHONE_NUMBER || '919876543200';
+  const adminPhones = rawAdmin.split(',').map(p => normalizePhone(p)).filter(Boolean);
+
   _config = {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
-    adminPhoneNumber: normalizePhone(process.env.ADMIN_PHONE_NUMBER || '919876543200'),
+    adminPhoneNumbers: adminPhones,
+    adminPhoneNumber: adminPhones[0] || '',
     enabled: (process.env.AI_BOT_ENABLED || 'true').toLowerCase() === 'true',
   };
 
@@ -76,8 +80,9 @@ function isDoctorJid(jid) {
  */
 function isAdminPhone(phone) {
   const normalized = normalizePhone(phone);
-  const adminPhone = _config.adminPhoneNumber || normalizePhone(process.env.ADMIN_PHONE_NUMBER || '919876543200');
-  return Boolean(normalized && adminPhone && normalized === adminPhone);
+  if (!normalized) return false;
+  const adminList = _config.adminPhoneNumbers || (process.env.ADMIN_PHONE_NUMBER || '919876543200').split(',').map(p => normalizePhone(p)).filter(Boolean);
+  return adminList.includes(normalized);
 }
 
 /**

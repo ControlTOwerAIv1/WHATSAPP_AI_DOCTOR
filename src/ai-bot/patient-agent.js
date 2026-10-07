@@ -439,7 +439,7 @@ async function _handleGeneralChat(phone, message) {
 }
 
 async function _handleClinicalQuestion(phone, message) {
-  const systemPrompt = `You are a medical AI assistant at Dr. AI Clinic. The patient has a medical question.
+  const systemPrompt = `You are a medical AI assistant at Al Ramzan Shifakhana. The patient has a medical question.
 
 Rules:
 - Provide helpful, accurate medical information.
@@ -451,7 +451,7 @@ Rules:
 }
 
 async function _handleMedicineQuery(phone, message) {
-  const systemPrompt = `You are a medical AI assistant at Dr. AI Clinic. The patient has a question about medicine.
+  const systemPrompt = `You are a medical AI assistant at Al Ramzan Shifakhana. The patient has a question about medicine.
 
 Rules:
 - Provide general information about medications.

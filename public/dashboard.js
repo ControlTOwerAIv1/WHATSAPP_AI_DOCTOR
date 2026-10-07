@@ -981,6 +981,7 @@
           <div class="chat-name" style="display:flex;align-items:center;min-width:0;width:100%;">
             <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${displayName}</span>
             ${verifiedBadge}
+            ${chat.awaitingManualReply ? '<span class="awaiting-reply-badge" title="Waiting for manual reply">Needs Reply</span>' : ''}
           </div>
           ${assigneeLabel}
         </div>
@@ -2183,6 +2184,11 @@
       refreshDateSeparators();
       sentTempIds.add(tempId);
 
+      if (activeChat && activeChat.awaitingManualReply) {
+        activeChat.awaitingManualReply = false;
+        renderChatList(allChats);
+      }
+
       cancelReply();
       clearComposer(input);
     }
@@ -2964,7 +2970,7 @@
       if (savedName) operatorName = savedName;
 
       socket = io(bridgeUrl, {
-        transports: ['websocket'],
+        transports: ['polling', 'websocket'],
         query: {
           operatorId: operatorId || '',
           operatorName: operatorName || ''
@@ -2980,7 +2986,13 @@
         } else {
           socket.emit('set_operator_name', { name: operatorName });
         }
+        socket.emit('get_bot_mode');
+        fetchBotMode();
         updateTopbarButtons();
+      });
+
+      socket.on('bot_mode_changed', ({ mode }) => {
+        updateBotModeUI(mode);
       });
 
       socket.on('operator_id', ({ id }) => {
@@ -4364,3 +4376,98 @@
 
     // Paste handling (images -> pending attachments, text -> plain-text insert) lives
     // in handleComposerPaste(), wired up via the messageInput's onpaste attribute.
+
+    async function handleLogout() {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+      } catch (_) {}
+      window.location.href = '/login';
+    }
+
+    // ─── AI Mode vs Manual Mode Toggle ──────────────────────────────────────────
+    let currentBotMode = 'ai';
+
+    function updateBotModeUI(mode) {
+      currentBotMode = mode === 'manual' ? 'manual' : 'ai';
+      const btn = document.getElementById('botModeToggle');
+      const icon = document.getElementById('botModeIcon');
+      const text = document.getElementById('botModeText');
+      if (!btn) return;
+
+      if (currentBotMode === 'manual') {
+        btn.classList.remove('ai-mode');
+        btn.classList.add('manual-mode');
+        if (icon) icon.textContent = '👤';
+        if (text) text.textContent = 'Manual Mode: ON';
+        btn.title = 'Manual Mode Active: AI responses are paused. Click to switch to AI Mode.';
+        btn.setAttribute('aria-label', 'Manual Mode Active. Click to switch to AI Mode.');
+      } else {
+        btn.classList.remove('manual-mode');
+        btn.classList.add('ai-mode');
+        if (icon) icon.textContent = '🤖';
+        if (text) text.textContent = 'AI Mode: ON';
+        btn.title = 'AI Mode Active: Automated replies enabled. Click to switch to Manual Mode.';
+        btn.setAttribute('aria-label', 'AI Mode Active. Click to switch to Manual Mode.');
+      }
+    }
+
+    async function fetchBotMode() {
+      if (socket?.connected) {
+        socket.emit('get_bot_mode');
+      }
+      try {
+        const res = await fetch('/api/bot/mode', { credentials: 'include' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.mode) {
+            updateBotModeUI(data.mode);
+          }
+        }
+      } catch (err) {
+        console.warn('[Dashboard] Failed to fetch bot mode:', err.message);
+      }
+    }
+
+    async function toggleBotMode() {
+      const newMode = currentBotMode === 'ai' ? 'manual' : 'ai';
+      // Optimistic update
+      updateBotModeUI(newMode);
+
+      if (socket?.connected) {
+        socket.emit('set_bot_mode', { mode: newMode });
+      }
+
+      try {
+        const res = await fetch('/api/bot/mode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ mode: newMode }),
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          updateBotModeUI(data.mode);
+          if (data.mode === 'manual') {
+            showToast('Switched to Manual Mode. AI bot auto-replies paused.', 'info');
+          } else {
+            showToast('Switched to AI Mode. Automated bot replies enabled.', 'success');
+          }
+          if (socket?.connected) {
+            socket.emit('set_bot_mode', { mode: data.mode });
+          }
+        } else {
+          showToast(data.error || 'Failed to switch bot mode', 'error');
+          updateBotModeUI(currentBotMode === 'ai' ? 'manual' : 'ai');
+        }
+      } catch (err) {
+        showToast('Error switching bot mode: ' + err.message, 'error');
+        updateBotModeUI(currentBotMode === 'ai' ? 'manual' : 'ai');
+      }
+    }
+
+    window.toggleBotMode = toggleBotMode;
+    window.fetchBotMode = fetchBotMode;
+    window.updateBotModeUI = updateBotModeUI;
+
+    // Initial bot mode fetch on script run
+    fetchBotMode();

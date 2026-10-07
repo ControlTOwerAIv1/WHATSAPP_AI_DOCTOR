@@ -134,6 +134,97 @@
       to { transform: rotate(360deg); }
     }
 
+    /* ─── Bot Mode Toggle (AI Mode vs Manual Mode) ─────────────────────── */
+    .bot-mode-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 14px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-family: var(--font-whatsapp, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto);
+      font-weight: 600;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      user-select: none;
+      outline: none;
+      min-height: 32px;
+    }
+
+    .bot-mode-toggle .bot-mode-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      transition: all 0.2s ease;
+    }
+
+    .bot-mode-toggle.ai-mode {
+      background: rgba(0, 229, 160, 0.12);
+      border: 1px solid rgba(0, 229, 160, 0.45);
+      color: #00e5a0;
+      box-shadow: 0 0 12px rgba(0, 229, 160, 0.15);
+    }
+
+    .bot-mode-toggle.ai-mode .bot-mode-dot {
+      background: #00e5a0;
+      box-shadow: 0 0 8px #00e5a0;
+    }
+
+    .bot-mode-toggle.ai-mode:hover {
+      background: rgba(0, 229, 160, 0.2);
+      border-color: #00e5a0;
+      transform: translateY(-1px);
+    }
+
+    .bot-mode-toggle.manual-mode {
+      background: rgba(245, 158, 11, 0.16);
+      border: 1px solid rgba(245, 158, 11, 0.55);
+      color: #f59e0b;
+      box-shadow: 0 0 12px rgba(245, 158, 11, 0.15);
+    }
+
+    .bot-mode-toggle.manual-mode .bot-mode-dot {
+      background: #f59e0b;
+      box-shadow: 0 0 8px #f59e0b;
+    }
+
+    .bot-mode-toggle.manual-mode:hover {
+      background: rgba(245, 158, 11, 0.26);
+      border-color: #f59e0b;
+      transform: translateY(-1px);
+    }
+
+    .bot-mode-toggle:active {
+      transform: scale(0.96);
+    }
+
+    /* Awaiting manual reply badge on chat cards */
+    .awaiting-reply-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      background: rgba(245, 158, 11, 0.2);
+      border: 1px solid rgba(245, 158, 11, 0.6);
+      color: #f59e0b;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      animation: pulseAwaiting 2s infinite ease-in-out;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+
+    @keyframes pulseAwaiting {
+      0%, 100% { opacity: 1; border-color: rgba(245, 158, 11, 0.6); }
+      50% { opacity: 0.65; border-color: rgba(245, 158, 11, 0.3); }
+    }
+
     .btn {
       padding: 7px 16px;
       border-radius: 6px;
@@ -3174,4 +3265,83 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ─── Mobile Responsiveness Enhancements (<= 480px) ────────────────────────── */
+@media (max-width: 480px) {
+  .topbar {
+    padding: 8px 12px;
+    gap: 8px;
+    min-height: 56px;
+  }
+
+  .bot-mode-toggle {
+    min-height: 44px;
+    padding: 8px 14px;
+    font-size: 11px;
+    gap: 6px;
+  }
+
+  .bot-mode-toggle .bot-mode-dot {
+    width: 10px;
+    height: 10px;
+  }
+
+  .mobile-menu-toggle {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .mobile-back-btn {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 10px;
+  }
+
+  .send-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .attach-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .sidebar-header .new-chat-btn {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .tab-btn {
+    min-height: 44px;
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+
+  .chat-item {
+    min-height: 64px;
+    padding: 12px 14px;
+  }
+
+  .chat-topbar {
+    padding: 8px 12px;
+    min-height: 56px;
+  }
+
+  .input-bar {
+    padding: 8px 10px;
+  }
+
+  .input-row {
+    gap: 8px;
+  }
+
+  .message-input {
+    min-height: 44px;
+    font-size: 15px;
+  }
 }

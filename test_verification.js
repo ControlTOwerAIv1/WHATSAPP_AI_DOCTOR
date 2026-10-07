@@ -25,7 +25,7 @@ async function runTests() {
   // ────────────────────────────────────────────────────────────────
   console.log('--- [TEST 1] Template Rendering & Placeholder Interpolation ---');
   const renderedPrompt = schedule.renderPromptTemplate();
-  assert(renderedPrompt.includes('Dr. AI Clinic'), 'Clinic name missing');
+  assert(renderedPrompt.includes('Al Ramzan Shifakhana'), 'Clinic name missing');
   assert(renderedPrompt.includes('only on Sundays'), 'Operating days missing');
   assert(renderedPrompt.includes('45 tokens'), 'Max tokens missing');
   assert(renderedPrompt.includes('11:00 AM – 1:30 PM'), 'Morning timing missing');
