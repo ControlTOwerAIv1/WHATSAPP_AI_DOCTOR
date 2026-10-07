@@ -20,7 +20,7 @@ module.exports = {
     {
       name: 'whisper',
       script: 'src/ai-bot/transcribe-server.py',
-      interpreter: 'python',
+     interpreter: '/var/www/WHATSAPP_AI_DOCTOR/venv/bin/python',
       watch: false,
       max_memory_restart: '1G',
       env: {

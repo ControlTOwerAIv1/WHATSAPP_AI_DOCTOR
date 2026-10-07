@@ -487,9 +487,9 @@
     // Check if user already has an active session
     async function checkExistingSession() {
       try {
-        const res = await fetch('/api/auth/me');
+        const res = await fetch('./api/auth/me');
         if (res.ok) {
-          window.location.replace('/');
+          window.location.replace('./');
         }
       } catch (_) {}
     }
@@ -552,7 +552,7 @@
       submitBtn.disabled = true;
 
       try {
-        const res = await fetch('/api/auth/login', {
+        const res = await fetch('./api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username, password })
@@ -562,7 +562,7 @@
 
         if (res.ok && data.success) {
           submitBtn.querySelector('.btn-text').textContent = 'Redirecting…';
-          window.location.replace('/');
+          window.location.replace('./');
           return;
         }
 

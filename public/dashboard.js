@@ -4395,10 +4395,14 @@
     // in handleComposerPaste(), wired up via the messageInput's onpaste attribute.
 
     async function handleLogout() {
+      const appBasePath = window.location.pathname
+        .replace(/\/(?:dashboard\.html)?$/, '')
+        .replace(/\/+$/, '');
+      const appUrl = `${window.location.origin}${appBasePath}`;
       try {
-        await fetch('/api/auth/logout', { method: 'POST' });
+        await fetch(`${appUrl}/api/auth/logout`, { method: 'POST' });
       } catch (_) {}
-      window.location.href = '/login';
+      window.location.href = `${appUrl}/login`;
     }
 
     // ─── AI Mode vs Manual Mode Toggle ──────────────────────────────────────────
@@ -4433,7 +4437,7 @@
         socket.emit('get_bot_mode');
       }
       try {
-        const res = await fetch('/api/bot/mode', { credentials: 'include' });
+        const res = await fetch(`${bridgeUrl}/api/bot/mode`, { credentials: 'include' });
         if (res.ok) {
           const data = await res.json();
           if (data && data.mode) {
@@ -4455,7 +4459,7 @@
       }
 
       try {
-        const res = await fetch('/api/bot/mode', {
+        const res = await fetch(`${bridgeUrl}/api/bot/mode`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
