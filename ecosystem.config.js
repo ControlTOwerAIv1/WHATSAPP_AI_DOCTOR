@@ -1,13 +1,13 @@
 module.exports = {
   apps: [
     {
-      name: 'echo',
+      name: 'doctor-automation',
       script: 'bridge.js',
       watch: false,
       max_memory_restart: '512M',
       env: {
         NODE_ENV: 'production',
-        PORT: 3001,
+        PORT: 3000,
       },
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
       error_file: './logs/error.log',
