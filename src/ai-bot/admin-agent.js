@@ -200,7 +200,7 @@ function _isAdminBookRequest(msg) {
 }
 
 /**
- * Build the bilingual (Hindi + English) patient confirmation message for admin-initiated bookings.
+ * Build the patient confirmation message for admin-initiated bookings.
  */
 function _formatPatientConfirmationBilingual(token) {
   const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -216,13 +216,7 @@ function _formatPatientConfirmationBilingual(token) {
     dateDisplay = `${d}${suffix} ${months[m]}`;
   }
 
-  // Hindi block first, then English
   return `Date: ${dateDisplay}
-Naam: ${token.patient_name}
-Token: #${token.token_number}
-Samay: ${token.arrival_time}
-
-Date: ${dateDisplay}
 Name: ${token.patient_name}
 Token: #${token.token_number}
 Time: ${token.arrival_time}`;
