@@ -361,6 +361,21 @@ function deleteTokensForDate(sundayDate) {
   }
 }
 
+function deleteSingleToken(sundayDate, tokenNumber) {
+  try {
+    const db = getDb();
+    const num = Number(tokenNumber);
+    const token = db.prepare('SELECT * FROM appointments_tokens WHERE sunday_date = ? AND token_number = ?').get(sundayDate, num);
+    if (!token) return { success: false, found: false, changes: 0 };
+    const res = db.prepare('DELETE FROM appointments_tokens WHERE sunday_date = ? AND token_number = ?').run(sundayDate, num);
+    console.log(`[Store] Deleted token #${num} for ${sundayDate}`);
+    return { success: true, found: true, changes: res.changes, token };
+  } catch (err) {
+    console.error(`[Store] Failed to delete token #${tokenNumber} for ${sundayDate}:`, err.message);
+    return { success: false, error: err.message };
+  }
+}
+
 // ─── Bookings / Tokens ────────────────────────────────────────────────────────
 
 function getBookingsInRange(fromDate, toDate, agentId = 'default') {
@@ -499,6 +514,7 @@ module.exports = {
   deleteOverridesForDate,
   clearFutureBookingWindowOverrides,
   deleteTokensForDate,
+  deleteSingleToken,
   getBookingsInRange,
   logExport,
   createSession,

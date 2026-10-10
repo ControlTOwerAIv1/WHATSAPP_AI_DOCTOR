@@ -200,6 +200,122 @@ function _isAdminBookRequest(msg) {
 }
 
 /**
+ * Detect if the message is requesting to cancel or delete an individual patient token.
+ * Excludes bulk cancellations (handled via CANCEL_ALL_BOOKINGS) and questions.
+ */
+function _isCancelSingleTokenRequest(message) {
+  if (!message || typeof message !== 'string') return false;
+  const l = message.toLowerCase().trim();
+
+  // Negative guard: Bulk cancellations must NOT be handled here
+  if (
+    l.includes('cancel all') ||
+    l.includes('delete all') ||
+    l.includes('delte all') ||
+    l.includes('all tokens') ||
+    l.includes('all bookings') ||
+    l.includes('all appointments') ||
+    l.includes('cancel given appointments') ||
+    l.includes('delete given')
+  ) {
+    return false;
+  }
+
+  // Negative guard: Questions / inquiries
+  if (/^(why|how|what|who|can patients|are we)\b/i.test(l)) {
+    return false;
+  }
+
+  // Must have a cancellation/deletion verb
+  const hasCancelVerb = /\b(cancel|cancle|delete|delte|remove|drop)\b/i.test(l);
+  if (!hasCancelVerb) return false;
+
+  // Must mention token, appointment, booking, or "this token" / "#1" / patient context
+  const mentionsTokenOrBooking =
+    /\b(token|appointment|booking|slot)\b/i.test(l) ||
+    /token\s*#?\d+/i.test(l) ||
+    /#\d+/i.test(l) ||
+    l.includes('this token') ||
+    l.includes('the token');
+
+  return Boolean(mentionsTokenOrBooking);
+}
+
+/**
+ * Resolve which active token is targeted for cancellation.
+ * Searches by explicit token number, patient phone, patient name,
+ * or context ("this token" if only 1 exists, or from recent assistant messages).
+ */
+function _resolveTokenToCancel(message, existingTokens, history = [], parsed = null) {
+  const l = (message || '').toLowerCase();
+
+  // 1. Explicit token number from regex or parsed
+  const numMatch = message.match(/(?:token\s*(?:#|no\.?|num\.?)?\s*(\d+)|#\s*(\d+))/i);
+  let requestedTokenNum = numMatch ? parseInt(numMatch[1] || numMatch[2], 10) : null;
+  if (requestedTokenNum === null && parsed && parsed.token_number) {
+    requestedTokenNum = parseInt(parsed.token_number, 10);
+  }
+
+  // 2. Patient phone in message
+  const phoneMatch = message.match(/\b(91\d{10}|\d{10})\b/);
+  const requestedPhone = phoneMatch ? phoneMatch[1] : null;
+
+  // 3. Match against existing tokens
+  let matchedToken = null;
+
+  if (requestedTokenNum !== null) {
+    matchedToken = existingTokens.find(t => t.token_number === requestedTokenNum);
+  }
+
+  if (!matchedToken && requestedPhone) {
+    matchedToken = existingTokens.find(t => t.patient_phone && t.patient_phone.includes(requestedPhone));
+  }
+
+  // Patient name matching (from message or parsed)
+  if (!matchedToken) {
+    const candidateName = (parsed && parsed.patient_name ? parsed.patient_name.toLowerCase() : '') || l;
+    for (const t of existingTokens) {
+      if (t.patient_name) {
+        const nameParts = t.patient_name.toLowerCase().split(/\s+/).filter(p => p.length >= 3);
+        if (nameParts.some(part => candidateName.includes(part))) {
+          matchedToken = t;
+          break;
+        }
+      }
+    }
+  }
+
+  // 4. Contextual reference ("cancel this token", "cancel it", "delete this token")
+  if (!matchedToken && (l.includes('this token') || l.includes('the token') || l.includes('cancel token') || l.includes('delete token'))) {
+    if (existingTokens.length === 1) {
+      // Exactly 1 active token exists for that date
+      matchedToken = existingTokens[0];
+    } else if (Array.isArray(history)) {
+      // Look back at recent assistant messages for "Token #X"
+      for (let i = history.length - 1; i >= 0; i--) {
+        const h = history[i];
+        if (h && h.role === 'assistant') {
+          const histNumMatch = h.content.match(/Token\s*#(\d+)/i);
+          if (histNumMatch) {
+            const histNum = parseInt(histNumMatch[1], 10);
+            const found = existingTokens.find(t => t.token_number === histNum);
+            if (found) {
+              matchedToken = found;
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    requestedTokenNum,
+    matchedToken,
+  };
+}
+
+/**
  * Build the patient confirmation message for admin-initiated bookings.
  */
 function _formatPatientConfirmationBilingual(token) {
@@ -641,6 +757,36 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
           return adminReply;
         }
 
+        // ── CANCEL_SINGLE_TOKEN confirmation path ─────────────────────────
+        if (pending.type === 'CANCEL_SINGLE_TOKEN' || pending.action === 'CANCEL_SINGLE_TOKEN') {
+          const { target_date, token_number, patient_name, patient_phone } = pending.data;
+
+          let patientNotified = false;
+          let notifyError = null;
+
+          if (patient_phone) {
+            try {
+              const cancellationMsg = `Hi ${patient_name || 'Patient'}, your appointment (Token #${token_number}) for ${target_date} at Al Ramzan Shifakhana has been cancelled by the clinic administration. We apologize for the inconvenience.`;
+              console.log(`[AI-Bot] 📢 Auto-notifying patient ${patient_phone} (${patient_name}): "${cancellationMsg}"`);
+              await _sendPatientNotification(patient_phone, cancellationMsg);
+              patientNotified = true;
+            } catch (notifyErr) {
+              notifyError = notifyErr.message;
+              console.error(`[AI-Bot] ❌ Failed to notify patient ${patient_phone}:`, notifyErr.message);
+            }
+          }
+
+          // Delete single token from SQLite store and cache
+          store.deleteSingleToken(target_date, token_number);
+          schedule.deleteSingleToken(target_date, token_number);
+          schedule.invalidateCache();
+          session.clearAdminPending(phone);
+
+          const reply = `✅ Cancelled Token #${token_number} for ${patient_name || 'Patient'} on ${target_date}.${patient_phone ? (patientNotified ? '\nPatient has been notified automatically via WhatsApp ✅' : `\n⚠️ Patient notification failed (${notifyError}). Please contact them manually at ${patient_phone}.`) : ''}`;
+          session.appendHistory(phone, 'assistant', reply);
+          return reply;
+        }
+
         // Execute the pending mutation!
         if (pending.action === 'CANCEL_ALL_BOOKINGS' || pending.cancel_tokens || pending.target_tab === 'CancelBookings') {
           const targetDate = pending.target_date || (await schedule.findNextOperatingDate(currentTime));
@@ -775,14 +921,56 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
           return reply;
         }
       } else if (confClassification === 'cancel') {
+        const wasTokenCancel = pending.type === 'CANCEL_SINGLE_TOKEN' || pending.action === 'CANCEL_SINGLE_TOKEN';
         session.clearAdminPending(phone);
-        const reply = "❌ Action cancelled. No changes were made to the clinic schedule.";
+        const reply = wasTokenCancel
+          ? "❌ Cancellation aborted. No token was deleted."
+          : "❌ Action cancelled. No changes were made to the clinic schedule.";
         session.appendHistory(phone, 'assistant', reply);
         return reply;
       } else {
         // Unrelated message: drop pending state and fall through to process fresh
         console.log(`[AI-Bot] Admin sent unrelated message during pending confirmation; dropping pending state.`);
         session.clearAdminPending(phone);
+      }
+    }
+
+    // ── 1.5. Admin single-token cancellation (CANCEL_SINGLE_TOKEN) ───
+    if (_isCancelSingleTokenRequest(message)) {
+      const targetDate = await schedule.findNextOperatingDate(currentTime);
+      const existingTokens = schedule.getTokensForSunday(targetDate);
+      const resolved = _resolveTokenToCancel(message, existingTokens, session.getHistory(phone, 4));
+
+      if (resolved.matchedToken) {
+        const token = resolved.matchedToken;
+        const confirmPrompt = `Admin cancellation summary:\n• Patient: ${token.patient_name}\n• Token: #${token.token_number} (${token.slot_name})\n• Date: ${targetDate}\n• Phone: ${token.patient_phone}\n• Arrival: around ${token.arrival_time}\n\nConfirming will delete this token from the database and automatically notify the patient via WhatsApp.\nReply 'yes' to confirm, or 'no' to abort.`;
+
+        session.setAdminPending(phone, {
+          type: 'CANCEL_SINGLE_TOKEN',
+          data: {
+            target_date: targetDate,
+            token_number: token.token_number,
+            patient_name: token.patient_name,
+            patient_phone: token.patient_phone,
+            slot_name: token.slot_name,
+          },
+          confirmation_prompt: confirmPrompt,
+        });
+
+        session.appendHistory(phone, 'assistant', confirmPrompt);
+        return confirmPrompt;
+      } else if (resolved.requestedTokenNum !== null) {
+        const reply = `❌ No active token #${resolved.requestedTokenNum} found for ${targetDate}.${existingTokens.length > 0 ? `\n\nActive booked tokens for ${targetDate}:\n` + existingTokens.map(t => `• Token #${t.token_number}: ${t.patient_name} (${t.slot_name})`).join('\n') : ` There are no active bookings for this date.`}`;
+        session.appendHistory(phone, 'assistant', reply);
+        return reply;
+      } else if (existingTokens.length === 0) {
+        const reply = `❌ There are currently no active booked tokens for ${targetDate} to cancel.`;
+        session.appendHistory(phone, 'assistant', reply);
+        return reply;
+      } else {
+        const reply = `Please specify which token you would like to cancel (e.g. "cancel token #1" or "cancel token for ${existingTokens[0].patient_name}").\n\nActive booked tokens for ${targetDate}:\n` + existingTokens.map(t => `• Token #${t.token_number}: ${t.patient_name} (${t.slot_name})`).join('\n');
+        session.appendHistory(phone, 'assistant', reply);
+        return reply;
       }
     }
 
@@ -857,7 +1045,13 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
       if (doctorInfo) {
         return await doctorAgent.handleDoctorMessage(phone, message, doctorInfo);
       }
-      const reply = "I couldn't quite understand that schedule change request. Could you please rephrase the date, timings, or token capacity you'd like to update?";
+      const lower = message.toLowerCase();
+      let reply;
+      if (lower.includes('token') || lower.includes('cancel') || lower.includes('delete') || lower.includes('delte')) {
+        reply = "I couldn't quite understand that cancellation request. Could you please specify the token number (e.g. 'cancel token #1') or patient name you'd like to cancel?";
+      } else {
+        reply = "I couldn't quite understand that schedule change request. Could you please rephrase the date, timings, or token capacity you'd like to update?";
+      }
       session.appendHistory(phone, 'assistant', reply);
       return reply;
     }
@@ -935,6 +1129,45 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
 
     // Step 10a: Look up how many tokens are already issued in SQLite for target date
     let affectedTokens = [];
+
+    // Handle CANCEL_SINGLE_TOKEN from LLM parse
+    if (parsed.action === 'CANCEL_SINGLE_TOKEN') {
+      const targetDate = parsed.target_date || (await schedule.findNextOperatingDate(currentTime));
+      const existingTokens = schedule.getTokensForSunday(targetDate);
+      const resolved = _resolveTokenToCancel(message, existingTokens, session.getHistory(phone, 4), parsed);
+
+      if (resolved.matchedToken) {
+        const token = resolved.matchedToken;
+        const confirmPrompt = `Admin cancellation summary:\n• Patient: ${token.patient_name}\n• Token: #${token.token_number} (${token.slot_name})\n• Date: ${targetDate}\n• Phone: ${token.patient_phone}\n• Arrival: around ${token.arrival_time}\n\nConfirming will delete this token from the database and automatically notify the patient via WhatsApp.\nReply 'yes' to confirm, or 'no' to abort.`;
+
+        session.setAdminPending(phone, {
+          type: 'CANCEL_SINGLE_TOKEN',
+          data: {
+            target_date: targetDate,
+            token_number: token.token_number,
+            patient_name: token.patient_name,
+            patient_phone: token.patient_phone,
+            slot_name: token.slot_name,
+          },
+          confirmation_prompt: confirmPrompt,
+        });
+
+        session.appendHistory(phone, 'assistant', confirmPrompt);
+        return confirmPrompt;
+      } else if (resolved.requestedTokenNum !== null) {
+        const reply = `❌ No active token #${resolved.requestedTokenNum} found for ${targetDate}.${existingTokens.length > 0 ? `\n\nActive booked tokens for ${targetDate}:\n` + existingTokens.map(t => `• Token #${t.token_number}: ${t.patient_name} (${t.slot_name})`).join('\n') : ` There are no active bookings for this date.`}`;
+        session.appendHistory(phone, 'assistant', reply);
+        return reply;
+      } else if (existingTokens.length === 0) {
+        const reply = `❌ There are currently no active booked tokens for ${targetDate} to cancel.`;
+        session.appendHistory(phone, 'assistant', reply);
+        return reply;
+      } else {
+        const reply = `Please specify which token you would like to cancel (e.g. "cancel token #1" or "cancel token for ${existingTokens[0].patient_name}").\n\nActive booked tokens for ${targetDate}:\n` + existingTokens.map(t => `• Token #${t.token_number}: ${t.patient_name} (${t.slot_name})`).join('\n');
+        session.appendHistory(phone, 'assistant', reply);
+        return reply;
+      }
+    }
 
     // Handle CANCEL_ALL_BOOKINGS or cancel_tokens
     if (parsed.action === 'CANCEL_ALL_BOOKINGS' || parsed.cancel_tokens || parsed.target_tab === 'CancelBookings') {

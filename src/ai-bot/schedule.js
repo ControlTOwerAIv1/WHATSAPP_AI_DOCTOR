@@ -1001,6 +1001,37 @@ function resetTokensForTesting(sundayDate) {
 }
 
 /**
+ * Delete a single token by date and token number.
+ */
+function deleteSingleToken(sundayDate, tokenNumber) {
+  let token = null;
+  const num = Number(tokenNumber);
+  try {
+    const db = _getDatabase();
+    if (db) {
+      token = db.prepare('SELECT * FROM appointments_tokens WHERE sunday_date = ? AND token_number = ?').get(sundayDate, num);
+      if (token) {
+        db.prepare('DELETE FROM appointments_tokens WHERE sunday_date = ? AND token_number = ?').run(sundayDate, num);
+        console.log(`[AI-Bot] Deleted token #${num} for ${sundayDate} from SQLite`);
+      }
+    }
+  } catch (e) {
+    console.error('[AI-Bot] Failed to delete token from SQLite:', e.message);
+  }
+  try {
+    if (fs.existsSync(TOKENS_JSON_PATH)) {
+      const all = JSON.parse(fs.readFileSync(TOKENS_JSON_PATH, 'utf8')) || [];
+      const filtered = all.filter(t => !(t.sunday_date === sundayDate && t.token_number === num));
+      fs.writeFileSync(TOKENS_JSON_PATH, JSON.stringify(filtered, null, 2), 'utf8');
+    }
+  } catch (e) {
+    // ignore
+  }
+  invalidateCache();
+  return token;
+}
+
+/**
  * Invalidate in-memory schedule cache.
  * SQLite is always current so only the in-process _lastEffectiveSchedule needs clearing.
  */
@@ -1027,6 +1058,7 @@ module.exports = {
   getSlotAvailability,
   allocateToken,
   resetTokensForTesting,
+  deleteSingleToken,
   invalidateCache,
   parseTimeToMinutes,
   formatMinutesTo12Hour,

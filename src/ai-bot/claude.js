@@ -420,8 +420,29 @@ Instructions:
    - consultation_start: e.g. "11:00" or as specified.
    - consultation_end: e.g. "18:30" or as specified.
    - token_cap: Number or null
-   - notes: Short description of the override (e.g. "Doctor unavailable", "Clinic closed", "Early booking opening", etc.)
-   - confirmation_prompt: Plain-language summary explaining what will change, specifying that it will write a row to the **Overrides** tab, and asking "Should I proceed? Reply 'yes' to confirm.4. BULK CANCELLATION / TOKEN DELETION (CANCEL_ALL_BOOKINGS):
+    - notes: Short description of the override (e.g. "Doctor unavailable", "Clinic closed", "Early booking opening", etc.)
+    - confirmation_prompt: Plain-language summary explaining what will change, specifying that it will write a row to the **Overrides** tab, and asking "Should I proceed? Reply 'yes' to confirm."
+
+4. TOKEN CANCELLATION / DELETION:
+A. SINGLE TOKEN CANCELLATION:
+If the admin or doctor wants to cancel a specific token or individual patient appointment:
+- "cancel this token"
+- "cancel the token #1 from the database molly"
+- "cancel token #1"
+- "delete token 1"
+- "cancel token for Molly"
+- "delete Molly's appointment"
+- "cancel appointment for David"
+
+Rules for single token cancellation:
+- action: "CANCEL_SINGLE_TOKEN"
+- cancel_tokens: true
+- target_date: The date of the clinic session (${nextOperatingDateStr})
+- token_number: Extracted token number as integer (e.g. 1) or null if not explicitly mentioned
+- patient_name: Extracted patient name (e.g. "Molly") or null if not explicitly mentioned
+- confirmation_prompt: "I understand you want to cancel Token #[number] for [name] on ${nextOperatingDateStr}. Should I proceed? Reply 'yes' to confirm."
+
+B. BULK CANCELLATION (CANCEL_ALL_BOOKINGS):
 If the admin or doctor wants to cancel existing appointments or delete issued tokens:
 - "cancel all given appointments for today"
 - "delte all the tokens that have been given out for today and change the booking window to sunday 8am to 9 am only for the coming weeks"
@@ -451,8 +472,10 @@ Admin command: "${message}"
 
 Return ONLY valid JSON matching this schema:
 {
-  "action": "CANCEL_ALL_BOOKINGS | MUTATE_SCHEDULE",
+  "action": "CANCEL_SINGLE_TOKEN | CANCEL_ALL_BOOKINGS | MUTATE_SCHEDULE",
   "cancel_tokens": false,
+  "token_number": null,
+  "patient_name": null,
   "is_permanent": false,
   "target_tab": "Overrides | Settings | CancelBookings",
   "target_date": "YYYY-MM-DD",
@@ -475,11 +498,21 @@ Return ONLY valid JSON matching this schema:
   if (!result) return null;
 
   try {
-    const cleaned = result.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    const parsed = JSON.parse(cleaned);
+    let parsed = null;
+    const cleaned = result.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch (_) {
+      const match = cleaned.match(/\{[\s\S]*\}/);
+      if (match) {
+        parsed = JSON.parse(match[0]);
+      } else {
+        throw _;
+      }
+    }
 
-    // Fallback: If cancel_tokens or CANCEL_ALL_BOOKINGS, ensure target_date is set
-    if (parsed.action === 'CANCEL_ALL_BOOKINGS' || parsed.cancel_tokens) {
+    // Fallback: If cancel_tokens or CANCEL_ALL_BOOKINGS or CANCEL_SINGLE_TOKEN, ensure target_date is set
+    if (parsed.action === 'CANCEL_ALL_BOOKINGS' || parsed.action === 'CANCEL_SINGLE_TOKEN' || parsed.cancel_tokens) {
       if (!parsed.target_date || parsed.target_date === todayStr) {
         // If today has no clinic scheduled, target the upcoming clinic date
         parsed.target_date = nextOperatingDateStr;
