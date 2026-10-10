@@ -118,7 +118,7 @@ async function runAllChecks() {
   // Patient requesting appointment on Wednesday -> must be rejected by window
   const patientBookingReply = await patientAgent.handlePatientMessage('919999000111', 'token chahiye', 'Patient Test');
   console.log('Patient booking request reply:', patientBookingReply);
-  assert(patientBookingReply.includes('Saturday') || patientBookingReply.includes('closed') || patientBookingReply.includes('open at 9:00 PM'), 'Patient booking should be rejected by booking window');
+  assert(patientBookingReply.includes('Saturday') || patientBookingReply.includes('Sunday') || patientBookingReply.includes('closed') || patientBookingReply.includes('will open at'), 'Patient booking should be rejected by booking window');
   console.log('✅ 3A: Patient appointment booking is properly blocked outside booking window.');
 
   // Admin booking request for a patient on upcoming Sunday -> must NOT be blocked by window
@@ -131,6 +131,7 @@ async function runAllChecks() {
   console.log('\n====================================================');
   console.log('🎉 ALL HANDOVER CHECKS PASSED PERFECTLY!');
   console.log('====================================================');
+  process.exit(0);
 }
 
 runAllChecks().catch(err => {

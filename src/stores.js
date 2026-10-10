@@ -10,8 +10,13 @@
 const fs = require('fs');
 const path = require('path');
 
+const DEFAULT_CONFIG = {
+  MAX_MESSAGES_PER_CHAT: 100,
+  SAVE_DEBOUNCE_MS: 1000,
+};
+
 let ROOT_DIR = null;
-let CONFIG = null;
+let CONFIG = { ...DEFAULT_CONFIG };
 let io = null;
 let database = null;
 let sock = null;
@@ -46,7 +51,7 @@ function updateSyncState(updates) {
 
 function init({ rootDir, config }) {
   ROOT_DIR = rootDir;
-  CONFIG = config;
+  CONFIG = Object.assign({}, DEFAULT_CONFIG, config);
 }
 
 function setIo(ioInstance) { io = ioInstance; }
@@ -559,8 +564,10 @@ function saveStore() {
           messageStore[jid] = messageStore[jid].slice(-CONFIG.MAX_MESSAGES_PER_CHAT);
         }
       }
-      database.saveContacts(Object.values(contactStore).filter((contact) => contact?.id));
-      database.saveChats(Object.values(chatStore).filter((chat) => chat?.id).map(normalizeChat));
+      if (database) {
+        database.saveContacts(Object.values(contactStore).filter((contact) => contact?.id));
+        database.saveChats(Object.values(chatStore).filter((chat) => chat?.id).map(normalizeChat));
+      }
     } catch (e) {
       console.error('[Bridge] Failed to save store:', e.message);
     }
@@ -585,7 +592,7 @@ function addMessageToStore(msg, options = {}) {
     };
   }
 
-  if (!options.skipDbWrite) {
+  if (!options.skipDbWrite && database) {
     database.upsertMessage(finalMsg);
   }
 
@@ -790,12 +797,18 @@ async function recordOutboundMessage({ jid, operator, result, message }) {
     chat.lastHandledByOperatorName = operator.name || operator.id;
     chat.lastHandledAt = Date.now();
   }
-  database.upsertChat(chat);
+  if (database) {
+    database.upsertChat(chat);
+  }
   updateChatPreview(jid, sentMsg.content, timestamp, true, sentMsg.status);
   saveStore();
   broadcastChats();
-  io.emit('message', sentMsg);
-  io.emit('stats', database.counts());
+  if (io) {
+    io.emit('message', sentMsg);
+    if (database) {
+      io.emit('stats', database.counts());
+    }
+  }
   return sentMsg;
 }
 

@@ -320,6 +320,47 @@ function addOverride(override = {}, agentId = 'default') {
   }
 }
 
+function deleteOverridesForDate(targetDate, agentId = 'default') {
+  try {
+    const db = getDb();
+    const res = db.prepare('DELETE FROM agent_overrides WHERE agent_id = ? AND target_date = ?').run(agentId, targetDate);
+    console.log(`[Store] Deleted ${res.changes} override(s) for ${targetDate}`);
+    return res.changes;
+  } catch (err) {
+    console.error('[Store] Failed to delete overrides for date:', err.message);
+    return 0;
+  }
+}
+
+function clearFutureBookingWindowOverrides(fromDate, agentId = 'default') {
+  try {
+    const db = getDb();
+    const res = db.prepare(`
+      DELETE FROM agent_overrides
+      WHERE agent_id = ? AND target_date >= ?
+        AND booking_opens_at IS NOT NULL AND booking_opens_at != ''
+        AND type != 'closed'
+    `).run(agentId, fromDate);
+    console.log(`[Store] Cleared ${res.changes} future booking window override(s) from ${fromDate}`);
+    return res.changes;
+  } catch (err) {
+    console.error('[Store] Failed to clear future booking window overrides:', err.message);
+    return 0;
+  }
+}
+
+function deleteTokensForDate(sundayDate) {
+  try {
+    const db = getDb();
+    const res = db.prepare('DELETE FROM appointments_tokens WHERE sunday_date = ?').run(sundayDate);
+    console.log(`[Store] Deleted ${res.changes} token(s) for ${sundayDate}`);
+    return res.changes;
+  } catch (err) {
+    console.error('[Store] Failed to delete tokens for date:', err.message);
+    return 0;
+  }
+}
+
 // ─── Bookings / Tokens ────────────────────────────────────────────────────────
 
 function getBookingsInRange(fromDate, toDate, agentId = 'default') {
@@ -455,6 +496,9 @@ module.exports = {
   updateSettings,
   getOverrides,
   addOverride,
+  deleteOverridesForDate,
+  clearFutureBookingWindowOverrides,
+  deleteTokensForDate,
   getBookingsInRange,
   logExport,
   createSession,

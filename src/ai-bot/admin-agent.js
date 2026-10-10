@@ -54,6 +54,24 @@ function _isDoctorSpecificQuery(msg) {
 function _isAdminBookRequest(msg) {
   const l = msg.toLowerCase().trim();
 
+  // Negative guard: Questions, cancellations, deletions, or inquiries about booking should NOT be intercepted as booking requests
+  const isQuestionOrInquiry =
+    /^(why|how|can patients|are we|is it|is booking|what|who)\b/i.test(l) ||
+    l.includes('why can') ||
+    l.includes('why is') ||
+    l.includes('why are') ||
+    l.includes('how come') ||
+    l.includes('even though') ||
+    l.includes('cancel all') ||
+    l.includes('cancel given') ||
+    l.includes('delete all') ||
+    l.includes('delete token') ||
+    l.includes('delte all') ||
+    l.includes('cancel appointment') ||
+    l.includes('cancel booking');
+
+  if (isQuestionOrInquiry) return false;
+
   // Fuzzy-match "book" variants (handles typos like "boook", "bokk", etc.)
   const hasBookIntent = /\bb[o]{1,4}k\b/i.test(l) ||
     l.includes('reserve') ||
@@ -62,7 +80,6 @@ function _isAdminBookRequest(msg) {
     l.includes('add patient') ||
     l.includes('need to book') ||
     l.includes('want to book') ||
-    l.includes('can i book') ||
     l.includes('book appointment') ||
     l.includes('book token') ||
     l.includes('appointment for') ||
@@ -70,7 +87,7 @@ function _isAdminBookRequest(msg) {
 
   if (!hasBookIntent) return false;
 
-  // Must mention someone/something to book FOR, OR be a standalone booking intent
+  // Must mention someone/something to book FOR, OR be an imperative booking command
   const hasTarget =
     l.includes('for ') ||
     l.includes('patient') ||
@@ -78,8 +95,8 @@ function _isAdminBookRequest(msg) {
     l.includes('number') ||
     l.includes('naam') ||
     l.includes('name') ||
-    // standalone: "Book an appointment" — let Claude extract details interactively
-    /\bb[o]{1,4}k\s+(a\s+)?(an?\s+)?(token|appointment|slot)\b/i.test(l);
+    // imperative standalone: "Book an appointment", "Please book a token" (NOT "why can we book...")
+    /^(please\s+)?b[o]{1,4}k\s+(a\s+)?(an?\s+)?(token|appointment|slot)\b/i.test(l);
 
   return hasTarget || (
     l.match(/(?:patient|person).*(?:naam|name).*(?:phone|number|mob)/i) !== null
@@ -127,18 +144,44 @@ function setNotificationSender(fn) {
 
 /**
  * Send an individual WhatsApp cancellation message to an affected patient (Step 10b).
+ * Records the outbound message in Echo store so it shows up on the Echo dashboard in real-time.
  */
 async function _sendPatientNotification(phone, text) {
+  const cleanPhone = phone.replace(/[^0-9]/g, '');
+  let result;
   if (typeof _notificationSender === 'function') {
-    return await _notificationSender(phone, text);
+    result = await _notificationSender(cleanPhone, text);
+  } else {
+    try {
+      const cloudapi = require('../cloudapi');
+      result = await cloudapi.sendText(cleanPhone, text);
+    } catch (err) {
+      console.warn(`[AI-Bot] WhatsApp notification warning for ${phone}:`, err.message);
+      throw err;
+    }
   }
+
+  // Record outbound message in Echo dashboard store so it appears in the Echo page
   try {
-    const cloudapi = require('../cloudapi');
-    return await cloudapi.sendText(phone, text);
-  } catch (err) {
-    console.warn(`[AI-Bot] WhatsApp notification warning for ${phone}:`, err.message);
-    throw err;
+    const stores = require('../stores');
+    if (stores && typeof stores.recordOutboundMessage === 'function') {
+      const jid = `${cleanPhone}@s.whatsapp.net`;
+      await stores.recordOutboundMessage({
+        jid,
+        operator: { id: 'ai-bot', name: 'AI Bot' },
+        result: result || { key: { id: `outbound-${Date.now()}` } },
+        message: {
+          content: text,
+          mediaType: 'text',
+        },
+      });
+      console.log(`[AI-Bot] Outbound patient notification recorded in Echo dashboard for ${cleanPhone}`);
+    }
+  } catch (storeErr) {
+    console.warn(`[AI-Bot] Failed to record notification in Echo store for ${cleanPhone}:`, storeErr.message);
   }
+
+  return result;
 }
 
 /**
@@ -273,11 +316,29 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
     // ── 0c. Complete a partial admin booking (phone or name was missing) ─
     const partialPending = session.getAdminPending(phone);
     if (partialPending && partialPending.type === 'ADMIN_BOOK_PARTIAL') {
-      const currentDateTimeISO = currentTime.toISOString().substring(0, 19);
-      const nextOperatingDate = await schedule.findNextOperatingDate(currentTime);
+      const lowerMsg = message.toLowerCase().trim();
+      const isExitOrCommand =
+        ['cancel', 'no', 'stop', 'abort', 'never mind', 'nhi', 'nahi', 'mat karo'].includes(lowerMsg) ||
+        lowerMsg.startsWith('cancel all') || lowerMsg.startsWith('delete') || lowerMsg.startsWith('delte') ||
+        lowerMsg.startsWith('why') || lowerMsg.startsWith('what') || lowerMsg.startsWith('how') ||
+        lowerMsg.includes('change') || lowerMsg.includes('update') || lowerMsg.includes('set ') ||
+        lowerMsg.includes('booking window') || lowerMsg.includes('give me') || lowerMsg.includes('list');
 
-      // First: check if this is a correction to the partial draft
-      const correctionCheck = await claude.classifyAdminBookCorrection(message, partialPending.data);
+      if (isExitOrCommand) {
+        console.log(`[AI-Bot] Admin dropped partial booking draft with message: "${message}"`);
+        session.clearAdminPending(phone);
+        if (['cancel', 'no', 'stop', 'abort', 'never mind', 'nhi', 'nahi', 'mat karo'].includes(lowerMsg)) {
+          const reply = "❌ Patient booking cancelled.";
+          session.appendHistory(phone, 'assistant', reply);
+          return reply;
+        }
+        // Fall through to process message fresh as a command or query!
+      } else {
+        const currentDateTimeISO = currentTime.toISOString().substring(0, 19);
+        const nextOperatingDate = await schedule.findNextOperatingDate(currentTime);
+
+        // First: check if this is a correction to the partial draft
+        const correctionCheck = await claude.classifyAdminBookCorrection(message, partialPending.data);
       if (correctionCheck.is_correction && correctionCheck.field && correctionCheck.new_value) {
         const updatedData = { ...partialPending.data };
         if (correctionCheck.field === 'name') updatedData.patient_name = correctionCheck.new_value;
@@ -392,6 +453,7 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
         return askMsg;
       }
     }
+  }
 
     // ── 1. Check for Pending Confirmation ───────────────────────────
     const pending = session.getAdminPending(phone);
@@ -480,6 +542,47 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
         }
 
         // Execute the pending mutation!
+        if (pending.action === 'CANCEL_ALL_BOOKINGS' || pending.cancel_tokens || pending.target_tab === 'CancelBookings') {
+          const targetDate = pending.target_date || (await schedule.findNextOperatingDate(currentTime));
+          const affectedTokens = pending.affected_tokens || schedule.getTokensForSunday(targetDate);
+          let notifiedCount = 0;
+
+          if (affectedTokens.length > 0) {
+            for (const patient of affectedTokens) {
+              try {
+                const cancellationMsg = `Hi ${patient.patient_name}, your appointment (Token #${patient.token_number}) for ${targetDate} at Al Ramzan Shifakhana has been cancelled by the clinic administration. We apologize for the inconvenience.`;
+                console.log(`[AI-Bot] 📢 Auto-notifying patient ${patient.patient_phone} (${patient.patient_name}): "${cancellationMsg}"`);
+                await _sendPatientNotification(patient.patient_phone, cancellationMsg);
+                notifiedCount++;
+              } catch (notifyErr) {
+                console.error(`[AI-Bot] ❌ Failed to notify patient ${patient.patient_phone}:`, notifyErr.message);
+              }
+            }
+          }
+
+          // Delete tokens from SQLite
+          store.deleteTokensForDate(targetDate);
+          schedule.resetTokensForTesting(targetDate);
+
+          // If there were also settings updates (e.g. combined command)
+          if (pending.updates && Object.keys(pending.updates).length > 0) {
+            store.updateSettings(pending.updates);
+            store.clearFutureBookingWindowOverrides(currentTime.toISOString().split('T')[0]);
+          }
+
+          schedule.invalidateCache();
+          session.clearAdminPending(phone);
+
+          const isToday = targetDate === currentTime.toISOString().split('T')[0];
+          const dateLabel = isToday ? "today" : targetDate;
+          const reply = affectedTokens.length > 0
+            ? `✅ Cancelled all ${affectedTokens.length} appointment(s) for ${dateLabel}. All ${notifiedCount} patient(s) have been notified automatically via WhatsApp.${pending.updates ? '\nPermanent clinic schedule settings have also been updated.' : ''}`
+            : `✅ Cancelled appointments for ${dateLabel}. There were no active bookings to notify.${pending.updates ? '\nPermanent clinic schedule settings have also been updated.' : ''}`;
+
+          session.appendHistory(phone, 'assistant', reply);
+          return reply;
+        }
+
         if (pending.target_tab === 'Overrides') {
           const overrideRecord = {
             target_date: pending.data?.target_date,
@@ -516,6 +619,12 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
                 // Continue notifying remaining patients (Step 10e)
               }
             }
+
+            // If clinic was closed, also delete the tokens from SQLite
+            if (overrideRecord.type === 'closed') {
+              store.deleteTokensForDate(overrideRecord.target_date);
+              schedule.resetTokensForTesting(overrideRecord.target_date);
+            }
           }
 
           session.clearAdminPending(phone);
@@ -546,6 +655,12 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
           return reply;
         } else if (pending.target_tab === 'Settings') {
           const res = store.updateSettings(pending.updates || {});
+          // If booking window was updated, clear any future one-off booking window overrides
+          // so the new Settings take effect immediately without being blocked by stale overrides
+          if (pending.updates && (pending.updates.booking_open_day || pending.updates.booking_open_time)) {
+            const todayStr = currentTime.toISOString().split('T')[0];
+            store.clearFutureBookingWindowOverrides(todayStr);
+          }
           schedule.invalidateCache();
           session.clearAdminPending(phone);
 
@@ -575,15 +690,16 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
     const intent = await claude.classifyAdminIntent(message);
 
     if (intent === 'QUERY') {
-      if (doctorInfo) {
-        // Semantic classification: DOCTOR_BOOKINGS vs CLINIC_CONFIG vs CLINIC_CAPACITY
-        const queryType = await claude.classifyAdminQueryType(message);
-        console.log(`[AI-Bot] Doctor query semantic classification: ${queryType} for message: "${message}"`);
+      // Semantic classification: DOCTOR_BOOKINGS vs CLINIC_CONFIG vs CLINIC_CAPACITY
+      const queryType = await claude.classifyAdminQueryType(message);
+      console.log(`[AI-Bot] Admin query semantic classification: ${queryType} for message: "${message}"`);
 
-        if (queryType === 'DOCTOR_BOOKINGS') {
-          console.log(`[AI-Bot] Delegating doctor booking query to doctor-agent for ${doctorInfo.name}`);
-          return await doctorAgent.handleDoctorMessage(phone, message, doctorInfo);
-        }
+      // If query is asking about booked tokens, patient names, appointments, or roster:
+      // Even if doctorInfo is null, the ADMIN has full authority to see the patient bookings!
+      if (queryType === 'DOCTOR_BOOKINGS' || _isDoctorSpecificQuery(message)) {
+        console.log(`[AI-Bot] Delegating booking/roster query for admin: "${message}"`);
+        const targetDoctor = doctorInfo || { name: 'Admin', specialty: 'Administration' };
+        return await doctorAgent.handleDoctorMessage(phone, message, targetDoctor);
       }
 
       // Fetch current effective schedule and context
@@ -591,7 +707,7 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
       const settings = store.getSettings();
       const overrides = store.getOverrides();
 
-      // Include macro capacity metrics for CLINIC_CAPACITY questions
+      // Include macro capacity metrics and active booked tokens
       const targetDate = await schedule.findNextOperatingDate(currentTime);
       const existingTokens = schedule.getTokensForSunday(targetDate);
       const bookedCount = existingTokens.length;
@@ -609,6 +725,14 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
           booked_count: bookedCount,
           available_tokens: availableTokens,
         },
+        booked_tokens: existingTokens.map(t => ({
+          token_number: t.token_number,
+          slot: t.slot_name,
+          patient_name: t.patient_name,
+          patient_phone: t.patient_phone,
+          arrival_time: t.arrival_time,
+          condition: t.condition || 'General consultation',
+        })),
       };
 
       if (doctorInfo) {
@@ -711,7 +835,26 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
 
     // Step 10a: Look up how many tokens are already issued in SQLite for target date
     let affectedTokens = [];
-    if (parsed.target_tab === 'Overrides' && parsed.override_data) {
+
+    // Handle CANCEL_ALL_BOOKINGS or cancel_tokens
+    if (parsed.action === 'CANCEL_ALL_BOOKINGS' || parsed.cancel_tokens || parsed.target_tab === 'CancelBookings') {
+      const targetDate = parsed.target_date || (await schedule.findNextOperatingDate(currentTime));
+      parsed.target_date = targetDate;
+      affectedTokens = schedule.getTokensForSunday(targetDate);
+      const count = affectedTokens.length;
+
+      const isToday = targetDate === currentTime.toISOString().split('T')[0];
+      const dateLabel = isToday ? 'today' : targetDate;
+      const patientSummary = count > 0
+        ? `Confirming this cancellation will delete all ${count} token(s) and automatically notify ${count === 1 ? 'the patient' : 'all patients'} via WhatsApp.`
+        : `There are currently no tokens booked for ${dateLabel}.`;
+
+      if (parsed.settings_updates && Object.keys(parsed.settings_updates).length > 0) {
+        parsed.confirmation_prompt = `I understand you want to:\n1. Cancel all existing tokens for ${dateLabel} (${count} booked). ${patientSummary}\n2. Permanently update the Settings tab with the new booking window.\n\nShould I proceed? Reply 'yes' to confirm.`;
+      } else {
+        parsed.confirmation_prompt = `${count} ${count === 1 ? 'patient holds a token' : 'patients hold tokens'} for ${dateLabel}. ${patientSummary}\n\nReply 'yes' to proceed.`;
+      }
+    } else if (parsed.target_tab === 'Overrides' && parsed.override_data) {
       const overrideType = (parsed.override_data.type || '').toLowerCase();
       const targetDate = parsed.override_data.target_date;
 
@@ -742,8 +885,11 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
 
     // Save pending action in session (with 10-minute auto-expiry)
     session.setAdminPending(phone, {
+      action: parsed.action,
+      cancel_tokens: parsed.cancel_tokens,
       is_permanent: parsed.is_permanent,
       target_tab: parsed.target_tab,
+      target_date: parsed.target_date,
       data: parsed.override_data,
       updates: parsed.settings_updates,
       confirmation_prompt: parsed.confirmation_prompt,

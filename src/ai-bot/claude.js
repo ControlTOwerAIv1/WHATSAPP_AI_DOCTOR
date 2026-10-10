@@ -416,21 +416,44 @@ Instructions:
    - consultation_end: e.g. "18:30" or as specified.
    - token_cap: Number or null
    - notes: Short description of the override (e.g. "Doctor unavailable", "Clinic closed", "Early booking opening", etc.)
-   - confirmation_prompt: Plain-language summary explaining what will change, specifying that it will write a row to the **Overrides** tab, and asking "Should I proceed? Reply 'yes' to confirm."
-3. If PERMANENT:
-   - target_tab: "Settings"
-   - updates: Object containing updated fields (e.g. max_tokens, morning_cap, afternoon_cap, operating_days, etc.)
-   - confirmation_prompt: Plain-language summary explaining what will change, specifying that it will update the **Settings** tab, and asking "Should I proceed? Reply 'yes' to confirm."
+   - confirmation_prompt: Plain-language summary explaining what will change, specifying that it will write a row to the **Overrides** tab, and asking "Should I proceed? Reply 'yes' to confirm.4. BULK CANCELLATION / TOKEN DELETION (CANCEL_ALL_BOOKINGS):
+If the admin or doctor wants to cancel existing appointments or delete issued tokens:
+- "cancel all given appointments for today"
+- "delte all the tokens that have been given out for today and change the booking window to sunday 8am to 9 am only for the coming weeks"
+- "delete all tokens that have been given out"
+- "cancel all bookings"
+- "delete all appointments for Sunday"
+- "cancel all tokens for tomorrow"
+- "cancel all appointments"
+
+Rules for cancellation commands:
+- action: "CANCEL_ALL_BOOKINGS"
+- cancel_tokens: true
+- target_date: The date of the clinic session whose appointments are being cancelled.
+  CRITICAL: If the user says "today" (${todayStr}), but today has NO clinic scheduled or 0 bookings, and the upcoming clinic date is ${nextOperatingDateStr} (e.g. tomorrow Sunday), resolve target_date to "${nextOperatingDateStr}".
+- If the message ALSO requests a permanent settings change (e.g. changing the booking window to Sunday 8am to 9am for future weeks):
+  - is_permanent: true
+  - target_tab: "Settings"
+  - settings_updates: { "booking_open_day": "Sunday", "booking_open_time": "08:00", "booking_close_day": "Sunday", "booking_close_time": "09:00" }
+  - confirmation_prompt: "I will cancel all existing appointments for ${nextOperatingDateStr}, delete their tokens, automatically notify each patient via WhatsApp, and permanently update the booking window in Settings to Sunday 8:00 AM – 9:00 AM. Should I proceed? Reply 'yes' to confirm."
+  - NEVER say that deleting tokens requires manual cancellation! The bot handles token cancellation and WhatsApp patient notifications automatically without manual effort.
+- If it is ONLY a cancellation command:
+  - is_permanent: false
+  - target_tab: "CancelBookings"
+  - confirmation_prompt: "I will cancel all appointments for ${nextOperatingDateStr}, delete their tokens, and automatically notify each patient via WhatsApp. Should I proceed? Reply 'yes' to confirm."
 
 Admin command: "${message}"
 
 Return ONLY valid JSON matching this schema:
 {
+  "action": "CANCEL_ALL_BOOKINGS | MUTATE_SCHEDULE",
+  "cancel_tokens": false,
   "is_permanent": false,
-  "target_tab": "Overrides" | "Settings",
+  "target_tab": "Overrides | Settings | CancelBookings",
+  "target_date": "YYYY-MM-DD",
   "override_data": {
     "target_date": "YYYY-MM-DD",
-    "type": "open_extra_day" | "closed" | "capacity_change",
+    "type": "open_extra_day | closed | capacity_change",
     "booking_opens_at": "...",
     "consultation_start": "11:00",
     "consultation_end": "18:30",
@@ -449,6 +472,14 @@ Return ONLY valid JSON matching this schema:
   try {
     const cleaned = result.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     const parsed = JSON.parse(cleaned);
+
+    // Fallback: If cancel_tokens or CANCEL_ALL_BOOKINGS, ensure target_date is set
+    if (parsed.action === 'CANCEL_ALL_BOOKINGS' || parsed.cancel_tokens) {
+      if (!parsed.target_date || parsed.target_date === todayStr) {
+        // If today has no clinic scheduled, target the upcoming clinic date
+        parsed.target_date = nextOperatingDateStr;
+      }
+    }
 
     // Fallback validation: ensure target_date is formatted YYYY-MM-DD and matches calendar
     if (parsed.target_tab === 'Overrides' && parsed.override_data) {
@@ -632,7 +663,9 @@ Rules:
 - Address the user as "Admin" if addressing them. Never use any personal names or placeholder names.
 - Answer the admin's question directly, concisely, and warmly.
 - State relevant opening days, booking window hours, consultation timings, and token caps accurately.
-- Keep response under 100 words.`;
+- If the Admin asks for specific token numbers, patient names, who has booked, or booking details, list them clearly from "booked_tokens" in the context (Token #, slot, patient name, arrival time, and phone number). If booked_tokens is empty, state clearly that no appointments/tokens are currently booked for that date.
+- NEVER say you don't have access to token numbers or patient names when they are present in booked_tokens in the context.
+- Keep response under 150 words.`;
 
   return await chat(systemPrompt, `Admin question: ${message}`);
 }
