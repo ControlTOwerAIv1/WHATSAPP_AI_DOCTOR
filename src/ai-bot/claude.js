@@ -378,6 +378,11 @@ Instructions:
    - The "target_date" is ALWAYS the date of the CLINIC CONSULTATION (the date patients visit the clinic and see the doctor), NEVER the date or time when bookings open.
    - The "booking_opens_at" field specifies WHEN patients can start booking (e.g. "Saturday 20:30", "Tuesday 21:00", etc.).
    
+   CRITICAL DISTINCTION — PATIENT BOOKINGS VS SCHEDULE COMMANDS:
+   - Commands requesting to book an appointment or token for a patient (e.g. "hi book an appointment molly", "book token for David", "book appointment", "give token to X") are PATIENT BOOKINGS, NOT clinic schedule commands.
+   - NEVER create an override, change capacity, or propose writing to the Overrides tab for individual patient booking requests!
+   - If the admin message is asking to book an individual appointment/token for a patient, return NULL.
+
    A. Booking Window / Booking Opening Commands (WITHOUT opening clinic on that day):
    If the admin/doctor ONLY wants to change when bookings open for the regular clinic:
    - "Start taking appointments from 12th 20:30 pm"

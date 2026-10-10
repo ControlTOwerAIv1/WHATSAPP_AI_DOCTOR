@@ -46,15 +46,72 @@ function _isDoctorSpecificQuery(msg) {
 }
 
 /**
+ * Find an existing patient contact by name from stores.contactStore or relay.sqlite.
+ * Allows admin to book by name (e.g. "hi book an appointment molly") without having to re-type the phone.
+ * @param {string} name
+ * @returns {{ name: string, phone: string } | null}
+ */
+function _findContactByName(name) {
+  if (!name || typeof name !== 'string' || name.trim().length < 2) return null;
+  const search = name.trim().toLowerCase();
+
+  // 1. Check in-memory stores.contactStore
+  try {
+    const stores = require('../stores');
+    if (stores && stores.contactStore) {
+      for (const [jid, c] of Object.entries(stores.contactStore)) {
+        const contactName = (c?.notify || c?.name || '').toLowerCase();
+        if (contactName && (contactName === search || contactName.includes(search) || search.includes(contactName))) {
+          const cleanPhone = jid.replace(/[^0-9]/g, '');
+          if (cleanPhone.length >= 8) {
+            return {
+              name: c.notify || c.name,
+              phone: cleanPhone,
+            };
+          }
+        }
+      }
+    }
+  } catch (_) {}
+
+  // 2. Fallback to relay.sqlite contacts table
+  try {
+    const Database = require('better-sqlite3');
+    const path = require('path');
+    const dbPath = path.resolve(__dirname, '../../relay.sqlite');
+    const db = new Database(dbPath, { readonly: true });
+    const rows = db.prepare('SELECT id, payload FROM contacts').all();
+    db.close();
+
+    for (const row of rows) {
+      try {
+        const p = JSON.parse(row.payload);
+        const contactName = (p.notify || p.name || '').toLowerCase();
+        if (contactName && (contactName === search || contactName.includes(search) || search.includes(contactName))) {
+          const cleanPhone = row.id.replace(/[^0-9]/g, '');
+          if (cleanPhone.length >= 8) {
+            return {
+              name: p.notify || p.name,
+              phone: cleanPhone,
+            };
+          }
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+
+  return null;
+}
+
+/**
  * Detect if admin is trying to book a token ON BEHALF OF a patient.
- * Triggers before the normal QUERY/COMMAND path.
- * Handles typos (extra letters like "boook"), standalone booking intent,
- * and common phrasings from clinic staff.
+ * Triggers before the normal QUERY/COMMAND path so admins can give out
+ * tokens whenever they want, bypassing all patient booking windows.
  */
 function _isAdminBookRequest(msg) {
   const l = msg.toLowerCase().trim();
 
-  // Negative guard: Questions, cancellations, deletions, or inquiries about booking should NOT be intercepted as booking requests
+  // Negative guard 1: Questions, inquiries about booking or clinic state
   const isQuestionOrInquiry =
     /^(why|how|can patients|are we|is it|is booking|what|who)\b/i.test(l) ||
     l.includes('why can') ||
@@ -72,35 +129,74 @@ function _isAdminBookRequest(msg) {
 
   if (isQuestionOrInquiry) return false;
 
-  // Fuzzy-match "book" variants (handles typos like "boook", "bokk", etc.)
-  const hasBookIntent = /\bb[o]{1,4}k\b/i.test(l) ||
-    l.includes('reserve') ||
-    l.includes('register') ||
-    l.includes('add a patient') ||
-    l.includes('add patient') ||
-    l.includes('need to book') ||
-    l.includes('want to book') ||
-    l.includes('book appointment') ||
-    l.includes('book token') ||
-    l.includes('appointment for') ||
-    l.includes('token for');
+  // Negative guard 2: Explicit schedule configuration / booking window commands
+  const isScheduleOrWindowCommand =
+    l.includes('booking window') ||
+    l.includes('booking open day') ||
+    l.includes('booking open time') ||
+    l.includes('booking close day') ||
+    l.includes('booking close time') ||
+    l.includes('start taking appointment') ||
+    l.includes('start accepting appointment') ||
+    l.includes('open booking') ||
+    l.includes('bookings open') ||
+    l.includes('booking open from') ||
+    l.includes('bookings open from') ||
+    l.includes('close booking') ||
+    l.includes('change booking window');
 
-  if (!hasBookIntent) return false;
+  if (isScheduleOrWindowCommand) return false;
 
-  // Must mention someone/something to book FOR, OR be an imperative booking command
-  const hasTarget =
-    l.includes('for ') ||
-    l.includes('patient') ||
-    l.includes('phone') ||
-    l.includes('number') ||
-    l.includes('naam') ||
-    l.includes('name') ||
-    // imperative standalone: "Book an appointment", "Please book a token" (NOT "why can we book...")
-    /^(please\s+)?b[o]{1,4}k\s+(a\s+)?(an?\s+)?(token|appointment|slot)\b/i.test(l);
+  // Positive intent 1: Imperative booking phrases anywhere in message (e.g. "hi book an appointment molly", "book an appointment")
+  if (/\bb[o]{1,4}k\s+(a\s+|an\s+|one\s+|\d+\s+)?(token|appointment|slot)s?\b/i.test(l)) {
+    return true;
+  }
 
-  return hasTarget || (
-    l.match(/(?:patient|person).*(?:naam|name).*(?:phone|number|mob)/i) !== null
-  );
+  // Positive intent 2: "give/allocate/issue token/appointment/slot"
+  if (/\b(give|allocate|issue)\s+(a\s+|an\s+|one\s+|\d+\s+)?(token|appointment|slot)s?\b/i.test(l)) {
+    return true;
+  }
+
+  // Positive intent 3: "appointment for", "token for", "slot for"
+  if (/\b(appointment|token|slot)\s+for\b/i.test(l)) {
+    return true;
+  }
+
+  // Positive intent 4: Booking with a target name, word, or phone number
+  const hasBookWord = /\bb[o]{1,4}k\b/i.test(l) || l.includes('reserve') || l.includes('register');
+  if (hasBookWord) {
+    if (
+      l.includes('for ') ||
+      l.includes('patient') ||
+      l.includes('phone') ||
+      l.includes('number') ||
+      l.includes('naam') ||
+      l.includes('name') ||
+      /\d{8,}/.test(l)
+    ) {
+      return true;
+    }
+
+    // Direct "book <name>" e.g. "book molly", "book ramesh"
+    const bookNameMatch = l.match(/\bb[o]{1,4}k\s+([a-z]+)\b/i);
+    if (bookNameMatch && !['the', 'a', 'an', 'this', 'that', 'tomorrow', 'today', 'sunday', 'now', 'open', 'early'].includes(bookNameMatch[1])) {
+      return true;
+    }
+  }
+
+  // Positive intent 5: Hindi / Hinglish phrases
+  if (
+    l.includes('token chahiye') ||
+    l.includes('token de do') ||
+    l.includes('appointment chahiye') ||
+    l.includes('naam likh do') ||
+    l.includes('appointment book') ||
+    l.includes('token book')
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -220,9 +316,22 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
 
       const parsed = await claude.parseAdminBookCommand(message, currentDateTimeISO, nextOperatingDate);
 
-      if (parsed && parsed.patient_name && parsed.patient_phone) {
+      let extractedName = parsed?.patient_name || null;
+      let extractedPhone = parsed?.patient_phone || null;
+
+      // Auto-resolve phone number if patient name was provided but phone was omitted
+      if (extractedName && !extractedPhone) {
+        const contactMatch = _findContactByName(extractedName);
+        if (contactMatch) {
+          extractedName = contactMatch.name || extractedName;
+          extractedPhone = contactMatch.phone;
+          console.log(`[AI-Bot] Auto-resolved patient "${extractedName}" -> ${extractedPhone} from contacts`);
+        }
+      }
+
+      if (extractedName && extractedPhone) {
         // Resolve target date
-        const targetDate = parsed.target_date || nextOperatingDate;
+        const targetDate = parsed?.target_date || nextOperatingDate;
 
         // Validate that targetDate is an actual operating day
         const effectiveSchedule = await schedule.getEffectiveSchedule(targetDate);
@@ -236,22 +345,22 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
         const isOperatingDay = !isClosed && (isOverrideOpen || isRegularDay);
 
         if (!isOperatingDay || effectiveSchedule.max_tokens === 0) {
-          const reply = `\u274c Cannot book: ${targetDate} (${targetDayName}) is not an operating day. Operating days: ${(effectiveSchedule.operating_days || []).join(', ')}. Please specify a valid clinic date.`;
+          const reply = `❌ Cannot book: ${targetDate} (${targetDayName}) is not an operating day. Operating days: ${(effectiveSchedule.operating_days || []).join(', ')}. Please specify a valid clinic date.`;
           session.appendHistory(phone, 'assistant', reply);
           return reply;
         }
 
         // Check for duplicate before showing confirmation
-        const existingToken = schedule.getTokenByPhone(parsed.patient_phone, targetDate);
+        const existingToken = schedule.getTokenByPhone(extractedPhone, targetDate);
         if (existingToken) {
-          const reply = `❌ ${parsed.patient_name} (${parsed.patient_phone}) already has Token #${existingToken.token_number} for ${targetDate}. No new booking was made.`;
+          const reply = `❌ ${extractedName} (${extractedPhone}) already has Token #${existingToken.token_number} for ${targetDate}. No new booking was made.`;
           session.appendHistory(phone, 'assistant', reply);
           return reply;
         }
 
         // Determine which slot would be assigned (for summary)
         const avail = await schedule.getSlotAvailability(targetDate);
-        const resolvedSlot = parsed.slot_preference ||
+        const resolvedSlot = parsed?.slot_preference ||
           (!avail.morning.isFull ? 'morning' : !avail.afternoon.isFull ? 'afternoon' : null);
 
         if (!resolvedSlot) {
@@ -263,15 +372,15 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
         const slotDetail = avail[resolvedSlot];
         const estimatedToken = resolvedSlot === 'morning'
           ? avail.morning.booked + 1
-          : effectiveSchedule.slots.morning.token_cap + avail.afternoon.booked + 1;
+          : (effectiveSchedule.slots?.morning?.token_cap || 0) + avail.afternoon.booked + 1;
 
-        const confirmPrompt = `Admin booking summary:\n• Patient: ${parsed.patient_name}\n• Phone: ${parsed.patient_phone}\n• Date: ${targetDate}\n• Slot: ${resolvedSlot} (Token ~#${estimatedToken})\n\nReply 'yes' to confirm, 'no' to cancel, or send a correction (e.g. "wrong number, use 919876500000").`;
+        const confirmPrompt = `Admin booking summary:\n• Patient: ${extractedName}\n• Phone: ${extractedPhone}\n• Date: ${targetDate}\n• Slot: ${resolvedSlot} (Token ~#${estimatedToken})\n\nReply 'yes' to confirm, 'no' to cancel, or send a correction (e.g. "wrong number, use 919876500000").`;
 
         session.setAdminPending(phone, {
           type: 'ADMIN_BOOK',
           data: {
-            patient_name: parsed.patient_name,
-            patient_phone: parsed.patient_phone.replace(/[^0-9]/g, ''),
+            patient_name: extractedName,
+            patient_phone: extractedPhone.replace(/[^0-9]/g, ''),
             target_date: targetDate,
             slot_preference: resolvedSlot,
           },
@@ -283,9 +392,6 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
 
       } else {
         // Parsing succeeded partially (name without phone, or nothing) — ask admin for missing details
-        const extractedName = parsed?.patient_name || null;
-        const extractedPhone = parsed?.patient_phone || null;
-
         let askMsg;
         if (!extractedName && !extractedPhone) {
           askMsg = `Sure, I can book an appointment for a patient. Please provide:\n• Patient full name\n• Patient WhatsApp phone number (with country code, e.g. 919876543210)`;
