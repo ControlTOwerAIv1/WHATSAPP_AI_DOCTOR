@@ -342,30 +342,65 @@ async function handleIncomingMessage(parsed) {
       reply = await patientAgent.handlePatientMessage(phone, messageText, senderName);
     }
 
+function _splitTextIntoChunks(text, maxLen = 3800) {
+  if (!text || text.length <= maxLen) return [text];
+
+  const chunks = [];
+  let remaining = text;
+
+  while (remaining.length > maxLen) {
+    let splitIndex = remaining.lastIndexOf('\n\n', maxLen);
+    if (splitIndex === -1 || splitIndex < maxLen * 0.4) {
+      splitIndex = remaining.lastIndexOf('\n', maxLen);
+    }
+    if (splitIndex === -1 || splitIndex < maxLen * 0.4) {
+      splitIndex = remaining.lastIndexOf(' ', maxLen);
+    }
+    if (splitIndex === -1 || splitIndex <= 0) {
+      splitIndex = maxLen;
+    }
+
+    chunks.push(remaining.slice(0, splitIndex).trim());
+    remaining = remaining.slice(splitIndex).trim();
+  }
+
+  if (remaining.length > 0) {
+    chunks.push(remaining);
+  }
+
+  return chunks;
+}
+
     // ── Send reply ──
     if (reply && _sock) {
-      // Record reply text immediately so incoming echo of this text is ignored
-      _botSentContents.add(reply.trim());
+      const chunks = typeof reply === 'string' && reply.length > 3800
+        ? _splitTextIntoChunks(reply, 3800)
+        : [reply];
 
-      const sent = await _sock.sendMessage(jid, { text: reply });
-      _recordBotSent(sent, reply);
+      for (const chunk of chunks) {
+        // Record reply text immediately so incoming echo of this text is ignored
+        _botSentContents.add(chunk.trim());
 
-      console.log(`[AI-Bot] Reply sent to ${phone} (${reply.length} chars)`);
+        const sent = await _sock.sendMessage(jid, { text: chunk });
+        _recordBotSent(sent, chunk);
 
-      // Record the outbound message in the store so it appears in the dashboard and DB
-      if (_stores) {
-        try {
-          await _stores.recordOutboundMessage({
-            jid,
-            operator: { id: 'ai-bot', name: 'AI Bot' },
-            result: sent,
-            message: {
-              content: reply,
-              mediaType: 'text',
-            },
-          });
-        } catch (storeErr) {
-          console.warn('[AI-Bot] Failed to record outbound message:', storeErr.message);
+        console.log(`[AI-Bot] Reply sent to ${phone} (${chunk.length} chars)`);
+
+        // Record the outbound message in the store so it appears in the dashboard and DB
+        if (_stores) {
+          try {
+            await _stores.recordOutboundMessage({
+              jid,
+              operator: { id: 'ai-bot', name: 'AI Bot' },
+              result: sent,
+              message: {
+                content: chunk,
+                mediaType: 'text',
+              },
+            });
+          } catch (storeErr) {
+            console.warn('[AI-Bot] Failed to record outbound message:', storeErr.message);
+          }
         }
       }
     }

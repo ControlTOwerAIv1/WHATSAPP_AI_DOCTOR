@@ -196,7 +196,50 @@ function jidToPhone(jid) {
   return jid.split('@')[0].split(':')[0];
 }
 
+function splitTextIntoChunks(text, maxLen = 3800) {
+  if (!text || text.length <= maxLen) return [text];
+
+  const chunks = [];
+  let remaining = text;
+
+  while (remaining.length > maxLen) {
+    let splitIndex = remaining.lastIndexOf('\n\n', maxLen);
+    if (splitIndex === -1 || splitIndex < maxLen * 0.4) {
+      splitIndex = remaining.lastIndexOf('\n', maxLen);
+    }
+    if (splitIndex === -1 || splitIndex < maxLen * 0.4) {
+      splitIndex = remaining.lastIndexOf(' ', maxLen);
+    }
+    if (splitIndex === -1 || splitIndex <= 0) {
+      splitIndex = maxLen;
+    }
+
+    chunks.push(remaining.slice(0, splitIndex).trim());
+    remaining = remaining.slice(splitIndex).trim();
+  }
+
+  if (remaining.length > 0) {
+    chunks.push(remaining);
+  }
+
+  return chunks;
+}
+
 async function sendText(to, text, options = {}) {
+  const MAX_WHATSAPP_TEXT_LENGTH = 3800;
+  if (typeof text === 'string' && text.length > MAX_WHATSAPP_TEXT_LENGTH) {
+    const chunks = splitTextIntoChunks(text, MAX_WHATSAPP_TEXT_LENGTH);
+    let lastResult = null;
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkOptions = i === 0 ? options : { ...options, quotedMessageId: undefined };
+      lastResult = await _sendSingleText(to, chunks[i], chunkOptions);
+    }
+    return lastResult;
+  }
+  return await _sendSingleText(to, text, options);
+}
+
+async function _sendSingleText(to, text, options = {}) {
   const phone = jidToPhone(to);
   const payload = {
     messaging_product: 'whatsapp',
@@ -944,6 +987,7 @@ module.exports = {
   handleWebhookVerification,
   handleWebhookPayload,
   sendText,
+  splitTextIntoChunks,
   sendImage,
   sendVideo,
   sendAudio,

@@ -147,17 +147,17 @@ function _addColumnIfMissing(db, table, column, definition) {
 
 const SETTINGS_DEFAULTS = {
   operating_days:    'Sunday',
-  booking_open_day:  'Saturday',
-  booking_open_time: '21:00',
+  booking_open_day:  'Sunday',
+  booking_open_time: '08:00',
   booking_close_day: 'Sunday',
-  booking_close_time:'18:00',
-  max_tokens:        45,
+  booking_close_time:'09:00',
+  max_tokens:        50,
   morning_start:     '11:00',
   morning_end:       '13:30',
-  morning_cap:       17,
+  morning_cap:       20,
   afternoon_start:   '14:30',
   afternoon_end:     '18:30',
-  afternoon_cap:     28,
+  afternoon_cap:     30,
   break_start:       '13:30',
   break_end:         '14:30',
   rounding_minutes:  30,
@@ -175,9 +175,10 @@ function getSettings(agentId = 'default') {
 
 function _rowToSettings(row) {
   const r          = row || {};
-  const morningCap   = Number(r.morning_cap)   || SETTINGS_DEFAULTS.morning_cap;
-  const afternoonCap = Number(r.afternoon_cap) || SETTINGS_DEFAULTS.afternoon_cap;
-  const maxTokens    = Number(r.max_tokens)    || (morningCap + afternoonCap);
+  const maxTokens    = Number(r.max_tokens) || SETTINGS_DEFAULTS.max_tokens;
+  const morningCap   = Number(r.morning_cap) || SETTINGS_DEFAULTS.morning_cap;
+  const rawAfternoon = Number(r.afternoon_cap) || SETTINGS_DEFAULTS.afternoon_cap;
+  const afternoonCap = Math.max(rawAfternoon, maxTokens - morningCap);
   const opDaysRaw    = r.operating_days || SETTINGS_DEFAULTS.operating_days;
   const operatingDays = opDaysRaw.split(',').map(d => d.trim()).filter(Boolean);
 

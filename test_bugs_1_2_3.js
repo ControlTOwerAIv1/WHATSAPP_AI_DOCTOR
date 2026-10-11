@@ -130,7 +130,7 @@ async function runVerification() {
   assert(doctorReply.includes('Salman Khan'), 'Must list patient Salman Khan');
   assert(doctorReply.includes('Shaheen Akhtar'), 'Must list patient Shaheen Akhtar');
   assert(doctorReply.includes('Token #1'), 'Must display Token #1');
-  assert(doctorReply.includes('Token #18') || doctorReply.includes('Token #19'), 'Must display afternoon Token #18 or #19');
+  assert(doctorReply.includes('Token #18') || doctorReply.includes('Token #19') || doctorReply.includes('Token #21'), 'Must display afternoon Token #18, #19, or #21');
   assert(doctorReply.includes('Persistent dry cough'), 'Must display condition for Salman');
   assert(doctorReply.includes('blood pressure check'), 'Must display condition for Shaheen');
   assert(doctorReply.includes('919821139201'), 'Must include patient phone number');
@@ -145,8 +145,8 @@ async function runVerification() {
   console.log('--- [PART 3] Bug 2 & 3: "Token chahiye" and Warm Confirmation ---');
 
   // Scenario 3A: Patient texts "Token chahiye" with WhatsApp push name "Salman"
-  // Saturday 9:30 PM (booking window OPEN)
-  const OPEN_TIME = '2026-08-29T21:30:00';
+  // Sunday 8:30 AM (booking window OPEN)
+  const OPEN_TIME = '2026-08-30T08:30:00';
   process.env.MOCK_CURRENT_TIME = OPEN_TIME;
   const targetSundayDate = '2026-08-30';
   schedule.resetTokensForTesting(targetSundayDate);

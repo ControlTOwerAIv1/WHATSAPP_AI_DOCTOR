@@ -3,15 +3,15 @@
   "operating_days": ["Sunday"],
   "operating_days_display": "Sundays",
   "booking_window": {
-    "start_day": "Saturday",
-    "start_time": "21:00",
-    "start_display": "9:00 PM on Saturday",
+    "start_day": "Sunday",
+    "start_time": "08:00",
+    "start_display": "8:00 AM on Sunday",
     "end_day": "Sunday",
-    "end_time": "18:00",
-    "end_display": "6:00 PM on Sunday",
-    "closed_message": "Appointments for the coming Sunday will open at 9:00 PM on Saturday."
+    "end_time": "09:00",
+    "end_display": "9:00 AM on Sunday",
+    "closed_message": "Appointments for the coming Sunday will open at 8:00 AM on Sunday."
   },
-  "max_tokens": 45,
+  "max_tokens": 50,
   "rounding_interval_minutes": 30,
   "break_period": {
     "start_time": "13:30",
@@ -28,9 +28,9 @@
       "end_time": "13:30",
       "start_display": "11:00 AM",
       "end_display": "1:30 PM",
-      "token_cap": 17,
+      "token_cap": 20,
       "token_start": 1,
-      "token_end": 17
+      "token_end": 20
     },
     "afternoon": {
       "name": "afternoon",
@@ -40,9 +40,9 @@
       "end_time": "18:30",
       "start_display": "2:30 PM",
       "end_display": "6:30 PM",
-      "token_cap": 28,
-      "token_start": 18,
-      "token_end": 45
+      "token_cap": 30,
+      "token_start": 21,
+      "token_end": 50
     }
   }
 }

@@ -45,7 +45,21 @@ async function handlePatientMessage(phone, message, senderName) {
   const stage = sess.stage;
   let isAppointmentIntent = false;
 
+  // Check recent conversation history for booking context
+  const recentHistory = session.getHistory(phone, 2);
+  const lastAssistantMsg = (recentHistory.filter(m => m.role === 'assistant').pop()?.content || '').toLowerCase();
+  const botPreviouslyAskedBookingOrName = lastAssistantMsg.includes('appointment') ||
+    lastAssistantMsg.includes('token') ||
+    lastAssistantMsg.includes('full name') ||
+    lastAssistantMsg.includes('apna pura naam') ||
+    lastAssistantMsg.includes('morning or afternoon') ||
+    lastAssistantMsg.includes('slot');
+
   if (stage && stage.startsWith('booking_')) {
+    isAppointmentIntent = true;
+  } else if (botPreviouslyAskedBookingOrName && (_isAffirmative(message) || _extractNameFromText(message) || !['clinical_question', 'medicine'].includes(lower))) {
+    // If bot previously asked about booking or name and user is responding (e.g. "yes", name, or clarification),
+    // this message is part of the appointment flow.
     isAppointmentIntent = true;
   } else {
     // Quick regex heuristic for common appointment / token phrases (Latin and Devanagari)
@@ -92,7 +106,7 @@ async function handlePatientMessage(phone, message, senderName) {
       } else if (intent === 'medicine') {
         reply = await _handleMedicineQuery(phone, message);
       } else {
-        reply = await _handleGeneralChat(phone, message);
+        reply = await _handleGeneralChat(phone, message, currentTime);
       }
     }
   }
@@ -426,16 +440,70 @@ Time: ${token.arrival_time}`;
 
 // ─── Non-Appointment General Chat & Inquiries ────────────────────────
 
-async function _handleGeneralChat(phone, message) {
-  const effectiveTargetDate = await schedule.findNextOperatingDate(getCurrentTime());
-  const systemPrompt = claude.getAppointmentSystemPrompt(effectiveTargetDate);
+async function _handleGeneralChat(phone, message, currentTime = getCurrentTime()) {
+  const effectiveTargetDate = await schedule.findNextOperatingDate(currentTime);
+  const windowStatus = await schedule.isBookingWindowOpen(currentTime, effectiveTargetDate);
+  const sched = await schedule.getEffectiveSchedule(effectiveTargetDate);
+
+  const lowerMsg = (message || '').toLowerCase().trim();
+
+  // If outside booking window, check if user is asking for appointment/token or asking when they open
+  if (!windowStatus.open) {
+    const isBookingRelated = /\b(token|appointment|slot|book|dikhana|doctor|dr|milna|sunday|kal|aaj|parson|timing|time|waqt|samay|chahiye|de do|naam)\b/i.test(lowerMsg) ||
+      (_detectHindi(message) && /(token|chahiye|de do|milega|dikhana|batao)/i.test(lowerMsg));
+
+    if (isBookingRelated) {
+      session.clearSession(phone);
+      return windowStatus.message;
+    }
+  }
+
+  let systemPrompt = claude.getAppointmentSystemPrompt(effectiveTargetDate);
+
+  if (!windowStatus.open) {
+    systemPrompt += `\n\n### CRITICAL STATUS: BOOKING WINDOW IS CURRENTLY CLOSED
+- The booking window is CURRENTLY CLOSED. Appointments for Sunday will open at ${sched.booking_window?.start_display || '8:00 AM on Sunday'}.
+- You are answering a general inquiry (e.g. location, greetings, clinic info).
+- Keep your response polite, warm, and under 50 words.
+- You must NEVER offer, suggest, or invite the patient to book an appointment or token.
+- NEVER ask "Would you like to book an appointment?", "Shall I book a slot?", or anything similar.
+- NEVER ask for the patient's name, phone number, or details.
+- NEVER mention or ask about morning or afternoon slot preferences.
+- If the patient asks about booking or appointments, reply ONLY with: "${windowStatus.message}".`;
+  } else {
+    systemPrompt += `\n\n### CRITICAL SLOT ALLOCATION RULE
+- Tokens are allocated strictly sequentially: Morning tokens (#1 to #${sched.slots?.morning?.token_cap || 20}) first, then Afternoon tokens (#${(sched.slots?.morning?.token_cap || 20) + 1} to #${sched.max_tokens || 50}).
+- You must NEVER ask the patient if they prefer morning or afternoon. Do NOT say "Would you prefer a morning or afternoon token?".`;
+  }
+
   const history = session.getHistory(phone, 6);
   const historyText = history.length > 0
     ? history.map(m => `${m.role === 'user' ? 'Patient' : 'Receptionist'}: ${m.content}`).join('\n')
     : 'No previous history.';
 
   const userPrompt = `Conversation history:\n${historyText}\n\nPatient's message: ${message}`;
-  return await claude.chat(systemPrompt, userPrompt);
+  let reply = await claude.chat(systemPrompt, userPrompt);
+
+  if (!reply) {
+    return "I'm sorry, I'm having a bit of trouble right now. Could you try sending your message again?";
+  }
+
+  // Safety filter on general chat replies:
+  // 1. Strip any morning/afternoon preference questions
+  if (/prefer.*(morning|afternoon)|morning or afternoon/i.test(reply)) {
+    reply = reply.replace(/Would you prefer a morning or afternoon token for Sunday\?/gi, '')
+                 .replace(/Would you prefer a morning or afternoon token\?/gi, '')
+                 .replace(/Would you prefer a morning or afternoon slot\?/gi, '')
+                 .replace(/Do you prefer morning or afternoon\?/gi, '')
+                 .trim();
+  }
+
+  // 2. If booking window is closed, never let booking solicitation leak through
+  if (!windowStatus.open && /would you like to book|shall i book|book an appointment|reserve a token/i.test(reply)) {
+    reply = windowStatus.message;
+  }
+
+  return reply;
 }
 
 async function _handleClinicalQuestion(phone, message) {
