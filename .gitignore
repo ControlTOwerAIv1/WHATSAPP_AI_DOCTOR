@@ -24,3 +24,5 @@ nodemon.json
 /data/*
 cloudflare_url.txt
 debug_*.js
+study/
+tests/replay/
