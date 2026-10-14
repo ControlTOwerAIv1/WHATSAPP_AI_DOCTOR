@@ -255,6 +255,7 @@ async function handleIncomingMessage(parsed) {
 
     // ── Handle audio/voice messages — transcription ──
     let messageText = (parsed.content || '').trim();
+    let isVoiceTranscript = false;
 
     if (isAudioOrVoice) {
       // ── Duration Guard: reject voice notes >15 seconds ──
@@ -311,6 +312,16 @@ async function handleIncomingMessage(parsed) {
 
       if (transcript && transcript.text && transcript.text.trim()) {
         messageText = transcript.text.trim();
+        isVoiceTranscript = true;
+        try {
+          const db = store.getDb();
+          db.prepare(`
+            INSERT INTO voice_transcripts (message_id, phone, duration_s, transcript, created_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
+          `).run(parsed.messageId || null, phone, audioDuration, messageText);
+        } catch (vtErr) {
+          console.warn('[AI-Bot] Failed to log voice transcript:', vtErr.message);
+        }
         console.log(`[AI-Bot] 🎤 Transcribed voice note (${transcript.transcription_time || '?'}s): "${messageText.substring(0, 80)}${messageText.length > 80 ? '...' : ''}"`);
       } else {
         // Transcription failed or empty — send fallback
@@ -339,7 +350,15 @@ async function handleIncomingMessage(parsed) {
       console.log(`[AI-Bot] Doctor identified: ${doctorInfo.name}`);
       reply = await doctorAgent.handleDoctorMessage(phone, messageText, doctorInfo);
     } else {
-      reply = await patientAgent.handlePatientMessage(phone, messageText, senderName);
+      if (process.env.PATIENT_AGENT_MODE === 'agent') {
+        const patientAgentV2 = require('./patient-agent-v2');
+        reply = await patientAgentV2.handlePatientMessageV2(phone, messageText, {
+          isVoice: isVoiceTranscript,
+          messageId: parsed.messageId,
+        });
+      } else {
+        reply = await patientAgent.handlePatientMessage(phone, messageText, senderName);
+      }
     }
 
 function _splitTextIntoChunks(text, maxLen = 3800) {

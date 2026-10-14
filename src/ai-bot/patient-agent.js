@@ -532,4 +532,5 @@ Rules:
 
 module.exports = {
   handlePatientMessage,
+  _formatBookingConfirmation,
 };
