@@ -7,6 +7,8 @@
  *   - Structured JSON validation (name, condition)
  */
 
+const fs = require('fs');
+const path = require('path');
 const Anthropic = require('@anthropic-ai/sdk');
 const { getConfig } = require('./config');
 const schedule = require('./schedule');
@@ -18,10 +20,11 @@ const MODEL = 'claude-sonnet-4-5';
 function _getClient() {
   if (!_client) {
     const config = getConfig();
-    if (!config.anthropicApiKey) {
+    const apiKey = config.anthropicApiKey || process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
       throw new Error('ANTHROPIC_API_KEY not configured');
     }
-    _client = new Anthropic({ apiKey: config.anthropicApiKey });
+    _client = new Anthropic({ apiKey });
     console.log(`[AI-Bot] Claude client initialized (model: ${MODEL})`);
   }
   return _client;
@@ -766,6 +769,122 @@ Return ONLY valid JSON in the following format:
   }
 }
 
+let _patientSystemPrompt = null;
+function _getPatientSystemPrompt() {
+  if (!_patientSystemPrompt) {
+    const promptPath = path.join(__dirname, 'prompts', 'patient-system.md');
+    _patientSystemPrompt = fs.readFileSync(promptPath, 'utf8');
+  }
+  return _patientSystemPrompt;
+}
+
+function _parseAndValidateDecision(rawText) {
+  if (!rawText) return null;
+  let parsed;
+  try {
+    const cleaned = rawText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    parsed = JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+
+  if (!parsed || typeof parsed !== 'object') return null;
+
+  const validActions = ['BOOK', 'CORRECT_NAME', 'REPLY'];
+  const validLanguages = ['en', 'hinglish', 'hindi_deva', 'urdu'];
+
+  if (!validActions.includes(parsed.action)) return null;
+  if (!validLanguages.includes(parsed.language)) return null;
+
+  if (parsed.action === 'BOOK' || parsed.action === 'CORRECT_NAME') {
+    if (!parsed.name || typeof parsed.name !== 'string' || !parsed.name.trim()) {
+      return null;
+    }
+  }
+
+  if (parsed.action === 'REPLY') {
+    if (!parsed.reply_text || typeof parsed.reply_text !== 'string' || !parsed.reply_text.trim()) {
+      return null;
+    }
+  }
+
+  return {
+    action: parsed.action,
+    name: parsed.name ? parsed.name.trim() : null,
+    language: parsed.language,
+    reply_text: parsed.reply_text ? parsed.reply_text.trim() : null,
+  };
+}
+
+/**
+ * Interpret patient message using Claude and return structured decision.
+ * @param {object} params
+ * @param {string} params.message
+ * @param {Array<{role: string, content: string}>} [params.history]
+ * @param {object} [params.context]
+ * @returns {Promise<{ action: 'BOOK'|'CORRECT_NAME'|'REPLY', name: string|null, language: string, reply_text: string|null }>}
+ */
+async function interpretPatientMessage({ message, history = [], context = {} }) {
+  const model = process.env.AGENT_MODEL_PATIENT || MODEL;
+  const systemPrompt = _getPatientSystemPrompt();
+
+  const recentHistory = (history || []).slice(-10);
+  let convoText = '';
+  if (recentHistory.length === 0) {
+    convoText = '(No previous messages)';
+  } else {
+    convoText = recentHistory.map(h => {
+      const speaker = h.role === 'assistant' ? 'Bot' : 'Patient';
+      return `${speaker}: ${h.content}`;
+    }).join('\n');
+  }
+
+  const userContent = `CONTEXT:\n${JSON.stringify(context, null, 2)}\n\nCONVERSATION:\n${convoText}\n\nNEW MESSAGE:\n${message}`;
+
+  const client = _getClient();
+  try {
+    const response = await client.messages.create({
+      model,
+      max_tokens: 400,
+      temperature: 0,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userContent }],
+    }, { timeout: 20000 });
+
+    const rawResponse = response.content[0]?.text?.trim() || '';
+    let decision = _parseAndValidateDecision(rawResponse);
+
+    if (!decision) {
+      // Retry ONCE with 'Return valid JSON only'
+      try {
+        const retryResponse = await client.messages.create({
+          model,
+          max_tokens: 400,
+          temperature: 0,
+          system: systemPrompt,
+          messages: [
+            { role: 'user', content: userContent },
+            { role: 'assistant', content: rawResponse },
+            { role: 'user', content: 'Return valid JSON only' },
+          ],
+        }, { timeout: 20000 });
+        decision = _parseAndValidateDecision(retryResponse.content[0]?.text?.trim());
+      } catch (retryErr) {
+        console.error('[AI-Bot] Claude interpret retry error:', retryErr.message);
+      }
+    }
+
+    if (!decision) {
+      return { action: 'REPLY', name: null, language: 'en', reply_text: null };
+    }
+
+    return decision;
+  } catch (err) {
+    console.error('[AI-Bot] Claude interpret error:', err.message);
+    return { action: 'REPLY', name: null, language: 'en', reply_text: null };
+  }
+}
+
 module.exports = {
   chat,
   chatWithHistory,
@@ -781,5 +900,6 @@ module.exports = {
   validateName,
   validateCondition,
   getAppointmentSystemPrompt,
+  interpretPatientMessage,
 };
 
