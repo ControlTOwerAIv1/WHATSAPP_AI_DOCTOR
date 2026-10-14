@@ -784,6 +784,71 @@ function getTokenByPhone(phone, sundayDate) {
 }
 
 /**
+ * Correct the patient name on an active token for a phone on a target date.
+ * Validates the new name, updates appointments_tokens, records audit in name_audit.
+ *
+ * @param {string} phone
+ * @param {string} targetDate - YYYY-MM-DD
+ * @param {string} newName
+ * @returns {{ success: boolean, token?: object, error?: string }}
+ */
+function correctTokenName(phone, targetDate, newName) {
+  const guards = require('./guards');
+  const validation = guards.validatePatientName(newName);
+  if (!validation.ok) {
+    return { success: false, error: validation.reason };
+  }
+  const validName = validation.name;
+  const normalizedPhone = (phone || '').replace(/[^0-9]/g, '');
+
+  const db = _getDatabase();
+  if (!db) {
+    return { success: false, error: 'Database unavailable' };
+  }
+
+  // Find active token ignoring cancelled tokens
+  const token = db.prepare(`
+    SELECT * FROM appointments_tokens
+    WHERE (patient_phone = ? OR REPLACE(patient_phone, '+', '') = ?)
+      AND sunday_date = ?
+      AND (status IS NULL OR status != 'cancelled')
+  `).get(normalizedPhone, normalizedPhone, targetDate);
+
+  if (!token) {
+    return { success: false, error: 'no_active_token' };
+  }
+
+  const oldName = token.patient_name;
+  db.prepare(`
+    UPDATE appointments_tokens
+    SET patient_name = ?
+    WHERE sunday_date = ? AND token_number = ?
+  `).run(validName, token.sunday_date, token.token_number);
+
+  const changedAt = new Date().toISOString().replace('T', ' ').substring(0, 19);
+  db.prepare(`
+    INSERT INTO name_audit (phone, target_date, old_name, new_name, changed_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(normalizedPhone, targetDate, oldName, validName, changedAt);
+
+  // Update disk JSON if exists
+  try {
+    const all = _loadTokensFromDisk();
+    const idx = all.findIndex(t => t.sunday_date === token.sunday_date && t.token_number === token.token_number);
+    if (idx !== -1) {
+      all[idx].patient_name = validName;
+      fs.writeFileSync(TOKENS_JSON_PATH, JSON.stringify(all, null, 2), 'utf8');
+    }
+  } catch (e) {}
+
+  invalidateCache();
+  return {
+    success: true,
+    token: { ...token, patient_name: validName },
+  };
+}
+
+/**
  * Check slot availability for a given date.
  */
 async function getSlotAvailability(targetDate = null) {
@@ -1204,6 +1269,7 @@ module.exports = {
   getTokensForDate: getTokensForSunday,
   getBookingsForDate,
   getTokenByPhone,
+  correctTokenName,
   getSlotAvailability,
   allocateToken,
   resetTokensForTesting,

@@ -116,6 +116,33 @@ function _runMigrations(db) {
       mode        TEXT NOT NULL DEFAULT 'ai',
       updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS name_audit (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      phone        TEXT NOT NULL,
+      target_date  TEXT NOT NULL,
+      old_name     TEXT NOT NULL,
+      new_name     TEXT NOT NULL,
+      changed_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS voice_transcripts (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id  TEXT,
+      phone       TEXT,
+      duration_s  REAL,
+      transcript  TEXT,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_log (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      phone_last4 TEXT,
+      action      TEXT,
+      result      TEXT,
+      ms          INTEGER,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   // Ensure default bot_settings row exists (id=1, mode='ai')
