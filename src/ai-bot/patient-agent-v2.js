@@ -230,6 +230,19 @@ async function _processMessage(phone, text, options = {}) {
       }
     }
 
+    // Strip any forbidden slot words from replies (e.g. "tomorrow morning" -> "tomorrow", "subah 8:00" -> "8:00")
+    if (reply) {
+      reply = reply
+        .replace(/\btomorrow morning\b/gi, 'tomorrow')
+        .replace(/\baaj subah\b/gi, 'aaj')
+        .replace(/\bkal subah\b/gi, 'kal')
+        .replace(/\bsubah\s+(\d)/gi, '$1')
+        .replace(/\bdopahar\s+(\d)/gi, '$1')
+        .replace(/\b(morning|afternoon|subah|dopahar)\b/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
     // 8. Append bot reply to history
     session.appendHistory(phone, 'assistant', reply);
     return reply;
