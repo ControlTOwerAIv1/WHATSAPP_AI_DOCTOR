@@ -27,7 +27,7 @@ let _db = null;
  */
 function getDb() {
   if (_db) return _db;
-  const dbPath = path.join(process.cwd(), 'relay.sqlite');
+  const dbPath = process.env.RELAY_DB_PATH || path.join(process.cwd(), 'relay.sqlite');
   _db = new Database(dbPath);
   _db.pragma('journal_mode = WAL');
   _db.pragma('synchronous = NORMAL');

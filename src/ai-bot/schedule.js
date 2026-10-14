@@ -1041,7 +1041,156 @@ function invalidateCache() {
   console.log('[AI-Bot] Schedule cache invalidated');
 }
 
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+/**
+ * Return a clean, structured description of the booking window in IST.
+ * @param {Date} [now]
+ * @returns {{ state: 'open'|'closed', target_date: string, clinic_day_today: boolean, opens_in_minutes: number|null, next_open_text: string|null, closes_at_text: string|null }}
+ */
+function describeBookingWindow(now = getCurrentTime()) {
+  const ist = _toIST(now);
+  const todayStr = formatDateToYYYYMMDD(now);
+  const todayDayIdx = ist.getUTCDay();
+  const todayDayName = DAY_NAMES[todayDayIdx];
+
+  const settings = store.getSettings();
+  const overrides = store.getOverrides();
+
+  const latestOverrides = new Map();
+  for (const o of overrides) {
+    if (o.target_date) latestOverrides.set(o.target_date.trim(), o);
+  }
+
+  const rawOpDays = Array.isArray(settings.operating_days)
+    ? settings.operating_days
+    : String(settings.operating_days || 'Sunday').split(',');
+  const opDays = rawOpDays.map(s => s.trim().toLowerCase());
+
+  const todayOverride = latestOverrides.get(todayStr);
+  let clinic_day_today = false;
+  if (todayOverride) {
+    clinic_day_today = (todayOverride.type || '').trim().toLowerCase() !== 'closed';
+  } else {
+    clinic_day_today = opDays.includes(todayDayName.toLowerCase());
+  }
+
+  for (let offset = 0; offset <= 45; offset++) {
+    const dDate = new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate() + offset));
+    const dateStr = `${dDate.getUTCFullYear()}-${String(dDate.getUTCMonth() + 1).padStart(2, '0')}-${String(dDate.getUTCDate()).padStart(2, '0')}`;
+    const dDayIdx = dDate.getUTCDay();
+    const dDayName = DAY_NAMES[dDayIdx];
+
+    const ov = latestOverrides.get(dateStr);
+    let isClinicDate = false;
+    if (ov) {
+      isClinicDate = (ov.type || '').trim().toLowerCase() !== 'closed';
+    } else {
+      isClinicDate = opDays.includes(dDayName.toLowerCase());
+    }
+    if (!isClinicDate) continue;
+
+    let startDayName, startTimeStr, endDayName, endTimeStr;
+    if (ov && ov.type !== 'closed') {
+      if (ov.booking_opens_at) {
+        const pw = parseBookingOpenString(ov.booking_opens_at, dDayName);
+        startDayName = pw.day;
+        startTimeStr = pw.time;
+      } else {
+        startDayName = settings.booking_open_day || 'Saturday';
+        startTimeStr = settings.booking_open_time || '21:00';
+      }
+      endDayName = dDayName;
+      endTimeStr = settings.booking_close_time || '18:00';
+    } else {
+      startDayName = settings.booking_open_day || 'Saturday';
+      startTimeStr = settings.booking_open_time || '21:00';
+      endDayName = settings.booking_close_day || 'Sunday';
+      endTimeStr = settings.booking_close_time || '18:00';
+    }
+
+    const startDayIdx = DAY_NAMES.findIndex(x => x.toLowerCase() === startDayName.toLowerCase());
+    const startOffsetDays = (dDayIdx - startDayIdx + 7) % 7;
+    const endDayIdx = DAY_NAMES.findIndex(x => x.toLowerCase() === endDayName.toLowerCase());
+    const endOffsetDays = (dDayIdx - endDayIdx + 7) % 7;
+
+    const [cY, cM, cD] = dateStr.split('-').map(Number);
+    const startMinutes = parseTimeToMinutes(startTimeStr);
+    const endMinutes = parseTimeToMinutes(endTimeStr);
+
+    const openDT = new Date(Date.UTC(cY, cM - 1, cD - startOffsetDays, Math.floor(startMinutes / 60), startMinutes % 60) - IST_OFFSET_MS);
+    const closeDT = new Date(Date.UTC(cY, cM - 1, cD - endOffsetDays, Math.floor(endMinutes / 60), endMinutes % 60) - IST_OFFSET_MS);
+
+    if (now >= openDT && now <= closeDT) {
+      const closeIST = _toIST(closeDT);
+      const closeTimeStr = formatMinutesTo12Hour(endMinutes);
+      const closeDateStr = formatDateToYYYYMMDD(closeDT);
+
+      const tomorrowDate = new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate() + 1));
+      const tomorrowStr = `${tomorrowDate.getUTCFullYear()}-${String(tomorrowDate.getUTCMonth() + 1).padStart(2, '0')}-${String(tomorrowDate.getUTCDate()).padStart(2, '0')}`;
+
+      let closes_at_text = '';
+      if (closeDateStr === todayStr) {
+        closes_at_text = `${closeTimeStr} today`;
+      } else if (closeDateStr === tomorrowStr) {
+        closes_at_text = `${closeTimeStr} tomorrow`;
+      } else {
+        closes_at_text = `${closeTimeStr} on ${DAY_NAMES[closeIST.getUTCDay()]}`;
+      }
+
+      return {
+        state: 'open',
+        target_date: dateStr,
+        clinic_day_today,
+        opens_in_minutes: null,
+        next_open_text: null,
+        closes_at_text,
+      };
+    }
+
+    if (now < closeDT) {
+      const opens_in_minutes = Math.round((openDT.getTime() - now.getTime()) / 60000);
+      const openIST = _toIST(openDT);
+      const openTimeStr = formatMinutesTo12Hour(startMinutes);
+      const openDateStr = formatDateToYYYYMMDD(openDT);
+
+      const tomorrowDate = new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate() + 1));
+      const tomorrowStr = `${tomorrowDate.getUTCFullYear()}-${String(tomorrowDate.getUTCMonth() + 1).padStart(2, '0')}-${String(tomorrowDate.getUTCDate()).padStart(2, '0')}`;
+
+      let next_open_text = '';
+      if (opens_in_minutes < 60) {
+        next_open_text = `in about ${opens_in_minutes} minutes (${openTimeStr} today)`;
+      } else if (openDateStr === todayStr) {
+        next_open_text = `today at ${openTimeStr}`;
+      } else if (openDateStr === tomorrowStr) {
+        next_open_text = `tomorrow at ${openTimeStr}`;
+      } else {
+        next_open_text = `${DAY_NAMES[openIST.getUTCDay()]}, ${openIST.getUTCDate()} ${MONTH_NAMES[openIST.getUTCMonth()]} at ${openTimeStr}`;
+      }
+
+      return {
+        state: 'closed',
+        target_date: dateStr,
+        clinic_day_today,
+        opens_in_minutes,
+        next_open_text,
+        closes_at_text: null,
+      };
+    }
+  }
+
+  return {
+    state: 'closed',
+    target_date: todayStr,
+    clinic_day_today,
+    opens_in_minutes: null,
+    next_open_text: null,
+    closes_at_text: null,
+  };
+}
+
 module.exports = {
+  describeBookingWindow,
   getEffectiveSchedule,
   getEffectiveScheduleSync,
   getScheduleConfig,
