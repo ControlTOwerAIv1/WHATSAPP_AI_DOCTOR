@@ -4,6 +4,7 @@ const schedule = require('./schedule');
 const guards = require('./guards');
 const claude = require('./claude');
 const patientAgent = require('./patient-agent');
+const store = require('./store');
 
 const _phoneQueues = new Map();
 const _handledMessageIds = new Set();
@@ -39,7 +40,9 @@ function _getFallbackApology(lang = 'hinglish') {
  * Internal processor for patient messages.
  */
 async function _processMessage(phone, text, options = {}) {
+  const startTime = Date.now();
   let userLang = 'hinglish';
+  let lastAction = 'REPLY';
   try {
     // 1. Get history and append patient message
     const history = session.getHistory(phone, 10);
@@ -82,6 +85,7 @@ async function _processMessage(phone, text, options = {}) {
     // 3. Interpret message
     const result = await claude.interpretPatientMessage({ message: text, history, context });
     userLang = result.language || 'hinglish';
+    lastAction = result.action || 'REPLY';
 
     let reply = null;
 
@@ -245,6 +249,20 @@ async function _processMessage(phone, text, options = {}) {
 
     // 8. Append bot reply to history
     session.appendHistory(phone, 'assistant', reply);
+
+    // Record metrics in agent_log
+    try {
+      const db = store.getDb();
+      if (db) {
+        const ms = Date.now() - startTime;
+        const last4 = (phone || '').slice(-4);
+        db.prepare(`
+          INSERT INTO agent_log (phone_last4, action, result, ms, created_at)
+          VALUES (?, ?, ?, ?, datetime('now'))
+        `).run(last4, lastAction, (reply || '').slice(0, 50), ms);
+      }
+    } catch (logErr) {}
+
     return reply;
 
   } catch (err) {
