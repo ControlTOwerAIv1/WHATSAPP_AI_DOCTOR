@@ -1,0 +1,834 @@
+{
+  "legacy": {
+    "handler": "legacy",
+    "total": 49,
+    "passed": 5,
+    "r1Passed": 9,
+    "r2Passed": 29,
+    "r3Passed": 49,
+    "r4Passed": 49,
+    "failures": [
+      {
+        "id": "P001",
+        "turn": 2,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P002",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P003",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P003",
+        "turn": 4,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P007",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P008",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P009",
+        "turn": 2,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P009",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P010",
+        "turn": 2,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P010",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P011",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P011",
+        "turn": 5,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P011",
+        "turn": 5,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P013",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P014",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P015",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P017",
+        "turn": 1,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P018",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P022",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P023",
+        "turn": 1,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P025",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P026",
+        "turn": 1,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P027",
+        "turn": 0,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P028",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P028",
+        "turn": 5,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P028",
+        "turn": 6,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P029",
+        "turn": 2,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P029",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P030",
+        "turn": 2,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P030",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P030",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P030",
+        "turn": 4,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P031",
+        "turn": 5,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P031",
+        "turn": 5,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P034",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P035",
+        "turn": 2,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P035",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P036",
+        "turn": 2,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P036",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P037",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P038",
+        "turn": 5,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P038",
+        "turn": 5,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P039",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P039",
+        "turn": 4,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P040",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P040",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P040",
+        "turn": 5,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P040",
+        "turn": 6,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P040",
+        "turn": 7,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P040",
+        "turn": 10,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P040",
+        "turn": 11,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P040",
+        "turn": 12,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P040",
+        "turn": 12,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P041",
+        "turn": 2,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P041",
+        "turn": 2,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P044",
+        "turn": 2,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P044",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P045",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P046",
+        "turn": 2,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P046",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P046",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P046",
+        "turn": 5,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P046",
+        "turn": 6,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P047",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P048",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P050",
+        "turn": 1,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P051",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P052",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P053",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P054",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P054",
+        "turn": 5,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P055",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P056",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P057",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P057",
+        "turn": 5,
+        "criterion": "R1_token_state"
+      }
+    ],
+    "excludedBadNames": [
+      "P004",
+      "P021"
+    ],
+    "excludedVoice": [
+      "P005",
+      "P006",
+      "P012",
+      "P016",
+      "P024",
+      "P032",
+      "P043",
+      "P046",
+      "P049"
+    ],
+    "overallRate": 10.204081632653061,
+    "r1Rate": 18.367346938775512,
+    "r2Rate": 59.183673469387756,
+    "r3Rate": 100,
+    "r4Rate": 100
+  },
+  "v2": {
+    "handler": "agent",
+    "total": 49,
+    "passed": 7,
+    "r1Passed": 8,
+    "r2Passed": 28,
+    "r3Passed": 49,
+    "r4Passed": 49,
+    "failures": [
+      {
+        "id": "P001",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P001",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P001",
+        "turn": 4,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P002",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P002",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P003",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P003",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P003",
+        "turn": 4,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P007",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P008",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P009",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P010",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P011",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P011",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P011",
+        "turn": 5,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P013",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P014",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P014",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P015",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P017",
+        "turn": 1,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P018",
+        "turn": 2,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P018",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P022",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P023",
+        "turn": 1,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P025",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P026",
+        "turn": 1,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P027",
+        "turn": 0,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P028",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P028",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P028",
+        "turn": 6,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P029",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P030",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P030",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P030",
+        "turn": 4,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P031",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P031",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P031",
+        "turn": 5,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P034",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P035",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P036",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P037",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P037",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P038",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P038",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P038",
+        "turn": 5,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P039",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P039",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P039",
+        "turn": 4,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P040",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P040",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P040",
+        "turn": 7,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P040",
+        "turn": 8,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P040",
+        "turn": 11,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P040",
+        "turn": 12,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P040",
+        "turn": 12,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P044",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P044",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P045",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P046",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P046",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P047",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P047",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P048",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P050",
+        "turn": 1,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P051",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P051",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P052",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P053",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P053",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P054",
+        "turn": 2,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P054",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P054",
+        "turn": 5,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P054",
+        "turn": 5,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P055",
+        "turn": 2,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P056",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P056",
+        "turn": 3,
+        "criterion": "R1_token_state"
+      },
+      {
+        "id": "P057",
+        "turn": 3,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P057",
+        "turn": 4,
+        "criterion": "R2_repeat"
+      },
+      {
+        "id": "P057",
+        "turn": 5,
+        "criterion": "R1_token_state"
+      }
+    ],
+    "excludedBadNames": [
+      "P004",
+      "P021"
+    ],
+    "excludedVoice": [
+      "P005",
+      "P006",
+      "P012",
+      "P016",
+      "P024",
+      "P032",
+      "P043",
+      "P046",
+      "P049"
+    ],
+    "overallRate": 14.285714285714285,
+    "r1Rate": 16.3265306122449,
+    "r2Rate": 57.14285714285714,
+    "r3Rate": 100,
+    "r4Rate": 100
+  }
+}

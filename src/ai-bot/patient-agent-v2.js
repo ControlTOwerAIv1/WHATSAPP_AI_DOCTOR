@@ -77,6 +77,7 @@ async function _processMessage(phone, text, options = {}) {
       consultation_hours: '11:00 AM to 6:30 PM',
       window: windowInfo,
       existing_token: existingTokenCtx,
+      active_token_status: existingTokenCtx ? `Has active token #${existingTokenCtx.token_number}` : 'No active token (zero tokens booked)',
       capacity: { full: capacityFull },
       is_voice_transcript: Boolean(options.isVoice),
       attempt_result: null,
@@ -88,6 +89,8 @@ async function _processMessage(phone, text, options = {}) {
     lastAction = result.action || 'REPLY';
 
     let reply = null;
+    let allocRes = null;
+    let correctRes = null;
 
     // 4. Handle action
     switch (result.action) {
@@ -139,7 +142,7 @@ async function _processMessage(phone, text, options = {}) {
           slotPreference = 'afternoon';
         }
 
-        const allocRes = await schedule.allocateToken({
+        allocRes = await schedule.allocateToken({
           phone,
           name: v.name,
           slotPreference,
@@ -166,7 +169,7 @@ async function _processMessage(phone, text, options = {}) {
 
       case 'CORRECT_NAME': {
         const dateToCorrect = existingTokenCtx ? existingTokenCtx.date : windowInfo.target_date;
-        const correctRes = guards.correctTokenName(phone, dateToCorrect, result.name);
+        correctRes = guards.correctTokenName(phone, dateToCorrect, result.name);
         if (correctRes.success && correctRes.token) {
           const isHindi = userLang !== 'en';
           reply = patientAgent._formatBookingConfirmation(correctRes.token, isHindi);
@@ -187,6 +190,30 @@ async function _processMessage(phone, text, options = {}) {
       case 'REPLY':
       default: {
         reply = result.reply_text;
+        // Hallucination safeguard: If patient has NO token in database, but Claude claimed they do:
+        if (!existingTokenCtx && reply && /(already has|already have|already got|pehle se|ek phone|one token per phone)/i.test(reply)) {
+          const v = guards.validatePatientName(text.replace(/^(hi|hello|hey|salam|assalam\s*o\s*alaikum|namaste)\s+/i, ''));
+          if (v.ok && windowInfo.state === 'open' && !capacityFull) {
+            const avail = await schedule.getSlotAvailability(windowInfo.target_date);
+            const slotPref = !avail.morning.isFull ? 'morning' : 'afternoon';
+            allocRes = await schedule.allocateToken({
+              phone,
+              name: v.name,
+              slotPreference: slotPref,
+              currentTime: now,
+              targetDate: windowInfo.target_date,
+            });
+            if (allocRes.success && allocRes.token) {
+              const isHindi = userLang !== 'en';
+              reply = patientAgent._formatBookingConfirmation(allocRes.token, isHindi);
+              lastAction = 'BOOK';
+            }
+          } else {
+            reply = userLang === 'en'
+              ? 'You do not have any active token. Please send your name to book an appointment.'
+              : 'Aapka koi active token nahi hai. Token book karne ke liye kripya apna naam bhejein.';
+          }
+        }
         break;
       }
     }
@@ -195,40 +222,48 @@ async function _processMessage(phone, text, options = {}) {
       reply = _getFallbackApology(userLang);
     }
 
-    // 5. Repeat guard
-    const fullHistory = session.getHistory(phone, 20) || [];
-    const last3Assistant = fullHistory.filter(h => h.role === 'assistant').slice(-3);
+    // 5. Repeat guard - Never suppress a newly confirmed booking receipt
+    const isConfirmedBooking = Boolean(
+      (result.action === 'BOOK' && allocRes && allocRes.success) ||
+      (result.action === 'CORRECT_NAME' && correctRes && correctRes.success) ||
+      (reply && reply.startsWith('Date:') && reply.includes('Token: #'))
+    );
 
-    if (guards.isRepeat(reply, last3Assistant)) {
-      const repeatRetry = await claude.interpretPatientMessage({
-        message: text,
-        history,
-        context: {
-          ...context,
-          attempt_result: {
-            action: 'REPLY',
-            error: 'repeat',
-            details: 'do not repeat; move forward or state current status',
+    if (!isConfirmedBooking) {
+      const fullHistory = session.getHistory(phone, 20) || [];
+      const last3Assistant = fullHistory.filter(h => h.role === 'assistant').slice(-3);
+
+      if (guards.isRepeat(reply, last3Assistant)) {
+        const repeatRetry = await claude.interpretPatientMessage({
+          message: text,
+          history,
+          context: {
+            ...context,
+            attempt_result: {
+              action: 'REPLY',
+              error: 'repeat',
+              details: 'do not repeat; move forward or state current status',
+            },
           },
-        },
-      });
+        });
 
-      if (repeatRetry && repeatRetry.reply_text && !guards.isRepeat(repeatRetry.reply_text, last3Assistant)) {
-        reply = repeatRetry.reply_text;
-      } else {
-        // Return short status line
-        if (existingTokenCtx) {
-          const isHindi = userLang !== 'en';
-          if (isHindi) {
-            reply = `Aapka token #${existingTokenCtx.token_number} (${existingTokenCtx.name}) confirm hai. Samay: ${existingTokenCtx.time}.`;
-          } else {
-            reply = `Your token #${existingTokenCtx.token_number} for ${existingTokenCtx.name} is confirmed. Time: ${existingTokenCtx.time}.`;
-          }
+        if (repeatRetry && repeatRetry.reply_text && !guards.isRepeat(repeatRetry.reply_text, last3Assistant)) {
+          reply = repeatRetry.reply_text;
         } else {
-          if (windowInfo.state === 'open') {
-            reply = `Booking window is open until ${windowInfo.closes_at_text || 'closing time'}. Send your name to book a token.`;
+          // Return short status line
+          if (existingTokenCtx) {
+            const isHindi = userLang !== 'en';
+            if (isHindi) {
+              reply = `Aapka token #${existingTokenCtx.token_number} (${existingTokenCtx.name}) confirm hai. Samay: ${existingTokenCtx.time}.`;
+            } else {
+              reply = `Your token #${existingTokenCtx.token_number} for ${existingTokenCtx.name} is confirmed. Time: ${existingTokenCtx.time}.`;
+            }
           } else {
-            reply = `Booking is currently closed. It opens ${windowInfo.next_open_text || 'soon'}.`;
+            if (windowInfo.state === 'open') {
+              reply = `Booking window is open until ${windowInfo.closes_at_text || 'closing time'}. Send your name to book a token.`;
+            } else {
+              reply = `Booking is currently closed. It opens ${windowInfo.next_open_text || 'soon'}.`;
+            }
           }
         }
       }
@@ -243,7 +278,9 @@ async function _processMessage(phone, text, options = {}) {
         .replace(/\bsubah\s+(\d)/gi, '$1')
         .replace(/\bdopahar\s+(\d)/gi, '$1')
         .replace(/\b(morning|afternoon|subah|dopahar)\b/gi, '')
-        .replace(/\s+/g, ' ')
+        .split('\n')
+        .map(line => line.replace(/[^\S\r\n]+/g, ' ').trim())
+        .join('\n')
         .trim();
     }
 

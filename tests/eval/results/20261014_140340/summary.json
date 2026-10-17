@@ -1,0 +1,108 @@
+{
+  "manifest": {
+    "gitHead": "f7b0b1f3c232724e6bdc465b2b38ff5177cc5f96",
+    "branch": "eval/patient-bot",
+    "systemPromptSha256": "bfd7ded042fc754948e75d407c8c3405094c5a89aaf7ade2c3062c8b19f18497",
+    "model": "claude-sonnet-4-5",
+    "temperature": 0,
+    "nodeVersion": "v20.20.2",
+    "seeds": {
+      "setA": 20261018,
+      "setB": 20261101
+    },
+    "caseCounts": {
+      "base": 182,
+      "mutations": 244,
+      "total": 426
+    },
+    "freezeTime": "2026-10-14T12:02:29.310Z",
+    "files": {
+      "build-cases.js": "2a250b0d2466b6c5ada92bfd498a156effbbd81392aaec1bfe534434aa78a0c8",
+      "cases.json": "3adb0f3e6d48b277c27108a7a4fa84ef810daaf29347cdd5fadf24a12177848a",
+      "cases.setB.json": "1080734b401e66dd0c1b8244946820b458491ad1b16a8fa78a4bd7528bf4d423",
+      "cases.txt": "1a849d93a008ecae469c90a19aec6c6d9fc673017c5cced2ce7b28b9848f6050",
+      "fixtures.js": "00ad30031ef8bac982d2804c5e2b66ae6498ccf63fdda6b302793979f45ad549",
+      "instrument.js": "b7b0840b932c84c2f01d38960cbd60a62dc597947fc20ce0634b11abfc8d4514",
+      "instrument.test.js": "477afe6d267dd0c3e5b5fe1bc61a2d69e48b63a4af454fd16afc5d2ab450a235",
+      "report.js": "f5f014c7da5393f7e1639da948da84c16f84d7d8afd12a81c2c6f9d0eeee68be",
+      "run-case.js": "792abafda7094fbc137b51f0eca4d6f2a3d1dd00a98d19a7609392c61bd62fd8",
+      "run-eval.js": "4f856dbee2fbe7b27fb46e7f1827acb73f91a7c9d8ca67afb30ef9f6e9b22731"
+    }
+  },
+  "overallScore": 80.42661531878476,
+  "verdict": "NOT SAFE TO LAUNCH",
+  "categoryStats": {
+    "U": {
+      "total": 205,
+      "passed": 203,
+      "cases": {},
+      "scorePercent": 99.02439024390245,
+      "weight": 30,
+      "casesCount": 205
+    },
+    "C": {
+      "total": 20,
+      "passed": 14,
+      "cases": {},
+      "scorePercent": 70,
+      "weight": 15,
+      "casesCount": 20
+    },
+    "L": {
+      "total": 18,
+      "passed": 13,
+      "cases": {},
+      "scorePercent": 72.22222222222221,
+      "weight": 15,
+      "casesCount": 18
+    },
+    "T": {
+      "total": 19,
+      "passed": 14,
+      "cases": {},
+      "scorePercent": 73.68421052631578,
+      "weight": 15,
+      "casesCount": 19
+    },
+    "S": {
+      "total": 136,
+      "passed": 102,
+      "cases": {},
+      "scorePercent": 75,
+      "weight": 10,
+      "casesCount": 136
+    },
+    "R": {
+      "total": 12,
+      "passed": 7,
+      "cases": {},
+      "scorePercent": 58.333333333333336,
+      "weight": 10,
+      "casesCount": 12
+    },
+    "X": {
+      "total": 8,
+      "passed": 8,
+      "cases": {},
+      "scorePercent": 100,
+      "weight": 5,
+      "casesCount": 8
+    }
+  },
+  "rigidityIndex": 17.5,
+  "flakeRate": 0,
+  "langUnkCount": 0,
+  "errorCount": 0,
+  "totalScoredRuns": 418,
+  "passedScoredRuns": 361,
+  "gateViolationsCount": {
+    "H1": 0,
+    "H2": 0,
+    "H3": 0,
+    "H4": 0,
+    "H5": 36,
+    "H6": 2,
+    "H7": 6
+  },
+  "failedRunsCount": 57
+}

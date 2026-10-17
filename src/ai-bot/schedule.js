@@ -952,10 +952,18 @@ async function allocateToken({ phone, name, slotPreference = 'morning', conditio
         }
       }
 
-      const tokenInSlot = targetTokens.length + 1;
-      const overallTokenNumber = targetSlotName === 'morning'
-        ? (morningTokens.length + 1)
-        : (morningCap + afternoonTokens.length + 1);
+      const existingTokenNumbers = new Set(tokens.map(t => t.token_number));
+      const existingInSlotNumbers = new Set(targetTokens.map(t => t.token_in_slot));
+
+      let tokenInSlot = 1;
+      while (existingInSlotNumbers.has(tokenInSlot)) {
+        tokenInSlot++;
+      }
+
+      let overallTokenNumber = targetSlotName === 'morning' ? tokenInSlot : (morningCap + tokenInSlot);
+      while (existingTokenNumbers.has(overallTokenNumber)) {
+        overallTokenNumber++;
+      }
 
       const arrivalTime = computeArrivalTime(
         tokenInSlot,
@@ -1049,6 +1057,13 @@ function resetTokensForTesting(sundayDate) {
   try {
     const db = _getDatabase();
     if (db) {
+      try {
+        const rows = db.prepare('SELECT DISTINCT patient_phone FROM appointments_tokens WHERE sunday_date = ?').all(sundayDate);
+        const session = require('./session');
+        for (const r of rows) {
+          if (r.patient_phone) session.clearSession(r.patient_phone);
+        }
+      } catch (_) {}
       db.prepare('DELETE FROM appointments_tokens WHERE sunday_date = ?').run(sundayDate);
     }
   } catch (e) {
@@ -1076,6 +1091,12 @@ function deleteSingleToken(sundayDate, tokenNumber) {
     if (db) {
       token = db.prepare('SELECT * FROM appointments_tokens WHERE sunday_date = ? AND token_number = ?').get(sundayDate, num);
       if (token) {
+        if (token.patient_phone) {
+          try {
+            const session = require('./session');
+            session.clearSession(token.patient_phone);
+          } catch (_) {}
+        }
         db.prepare('DELETE FROM appointments_tokens WHERE sunday_date = ? AND token_number = ?').run(sundayDate, num);
         console.log(`[AI-Bot] Deleted token #${num} for ${sundayDate} from SQLite`);
       }

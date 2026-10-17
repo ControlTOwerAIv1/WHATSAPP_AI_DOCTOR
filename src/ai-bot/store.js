@@ -380,6 +380,16 @@ function clearFutureBookingWindowOverrides(fromDate, agentId = 'default') {
 function deleteTokensForDate(sundayDate) {
   try {
     const db = getDb();
+    try {
+      const phones = db.prepare('SELECT DISTINCT patient_phone FROM appointments_tokens WHERE sunday_date = ?').all(sundayDate);
+      const session = require('./session');
+      for (const row of phones) {
+        if (row.patient_phone) {
+          session.clearSession(row.patient_phone);
+        }
+      }
+    } catch (_) {}
+
     const res = db.prepare('DELETE FROM appointments_tokens WHERE sunday_date = ?').run(sundayDate);
     console.log(`[Store] Deleted ${res.changes} token(s) for ${sundayDate}`);
     return res.changes;
@@ -395,6 +405,12 @@ function deleteSingleToken(sundayDate, tokenNumber) {
     const num = Number(tokenNumber);
     const token = db.prepare('SELECT * FROM appointments_tokens WHERE sunday_date = ? AND token_number = ?').get(sundayDate, num);
     if (!token) return { success: false, found: false, changes: 0 };
+    if (token.patient_phone) {
+      try {
+        const session = require('./session');
+        session.clearSession(token.patient_phone);
+      } catch (_) {}
+    }
     const res = db.prepare('DELETE FROM appointments_tokens WHERE sunday_date = ? AND token_number = ?').run(sundayDate, num);
     console.log(`[Store] Deleted token #${num} for ${sundayDate}`);
     return { success: true, found: true, changes: res.changes, token };

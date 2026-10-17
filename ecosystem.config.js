@@ -8,6 +8,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 3000,
+        PATIENT_AGENT_MODE: 'agent',
       },
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
       error_file: './logs/error.log',

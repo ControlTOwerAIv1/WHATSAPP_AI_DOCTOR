@@ -15,7 +15,7 @@ const schedule = require('./schedule');
 
 let _client = null;
 
-const MODEL = 'claude-sonnet-4-5';
+const MODEL = 'claude-haiku-5-5';
 
 function _getClient() {
   if (!_client) {
@@ -40,25 +40,76 @@ function getAppointmentSystemPrompt(targetDate = null) {
   return schedule.renderPromptTemplate(targetDate);
 }
 
+function _supportsTemperature(modelName) {
+  if (!modelName) return true;
+  if (/haiku-5/i.test(modelName)) return false;
+  return true;
+}
+
+function textFrom(response) {
+  if (!response || !Array.isArray(response.content)) return null;
+  const text = response.content
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text)
+    .join('')
+    .trim();
+  if (!text) console.error(`[AI-Bot] No text in response (stop_reason: ${response.stop_reason})`);
+  return text || null;
+}
+
+function _cleanPayload(payload) {
+  const isHaiku5 = payload.model && /haiku-5/i.test(payload.model);
+  if (isHaiku5) {
+    delete payload.temperature;
+    if (!payload.output_config) {
+      payload.output_config = { effort: 'low' };
+    }
+    // Headroom for thinking; only tokens used are billed
+    if (payload.max_tokens !== undefined && payload.max_tokens < 2048) {
+      payload.max_tokens += 2048;
+    }
+  } else {
+    delete payload.output_config;
+  }
+  return payload;
+}
+
+async function _createMessage(client, payload, options = {}) {
+  _cleanPayload(payload);
+  try {
+    return await client.messages.create(payload, options);
+  } catch (err) {
+    if (payload.temperature !== undefined && err.message && /temperature.*deprecated/i.test(err.message)) {
+      console.warn(`[AI-Bot] temperature is deprecated for model ${payload.model}. Retrying without temperature.`);
+      delete payload.temperature;
+      return await client.messages.create(payload, options);
+    }
+    throw err;
+  }
+}
+
 /**
  * Low-level message call to Claude.
  * @param {string} systemPrompt - System instructions
  * @param {string} userMessage - User's message
- * @param {object} options - { temperature, maxTokens }
+ * @param {object} options - { effort, maxTokens }
  * @returns {string} Claude's text response
  */
 async function chat(systemPrompt, userMessage, options = {}) {
-  const { temperature = 0.3, maxTokens = 600 } = options;
+  const { maxTokens = 600, effort = 'low' } = options;
   try {
     const client = _getClient();
-    const response = await client.messages.create({
+    const payload = {
       model: MODEL,
       max_tokens: maxTokens,
-      temperature,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
-    });
-    return response.content[0].text.trim();
+    };
+    if (effort) {
+      payload.output_config = { effort };
+    }
+    const response = await _createMessage(client, payload);
+    return textFrom(response) || '';
   } catch (err) {
     console.error('[AI-Bot] Claude API error:', err.message);
     return null;
@@ -69,21 +120,24 @@ async function chat(systemPrompt, userMessage, options = {}) {
  * Multi-turn conversation with Claude (includes history).
  * @param {string} systemPrompt
  * @param {Array<{role: string, content: string}>} messages - Anthropic-format messages
- * @param {object} options
+ * @param {object} options - { effort, maxTokens }
  * @returns {string}
  */
 async function chatWithHistory(systemPrompt, messages, options = {}) {
-  const { temperature = 0.3, maxTokens = 600 } = options;
+  const { maxTokens = 600, effort = 'low' } = options;
   try {
     const client = _getClient();
-    const response = await client.messages.create({
+    const payload = {
       model: MODEL,
       max_tokens: maxTokens,
-      temperature,
       system: systemPrompt,
       messages,
-    });
-    return response.content[0].text.trim();
+    };
+    if (effort) {
+      payload.output_config = { effort };
+    }
+    const response = await _createMessage(client, payload);
+    return textFrom(response) || '';
   } catch (err) {
     console.error('[AI-Bot] Claude API error:', err.message);
     return null;
@@ -114,7 +168,7 @@ CRITICAL: Output ONLY the single word label. No whitespace, punctuation, quotes,
 
 Message: ${message}`;
 
-  const result = await chat('', prompt, { temperature: 0, maxTokens: 20 });
+  const result = await chat('', prompt, { effort: 'low', maxTokens: 20 });
   if (!result) return 'general';
 
   const cleaned = result.toLowerCase().replace(/[^a-z_]/g, '');
@@ -141,7 +195,7 @@ Classify into exactly one of these labels:
 
 CRITICAL: Output ONLY the single word: confirm, cancel, or other.`;
 
-  const result = await chat('', prompt, { temperature: 0, maxTokens: 20 });
+  const result = await chat('', prompt, { effort: 'low', maxTokens: 20 });
   if (!result) return 'other';
 
   const cleaned = result.toLowerCase().replace(/[^a-z]/g, '');
@@ -255,7 +309,7 @@ Message: "${message}"
 
 CRITICAL: Output ONLY the single word: QUERY or COMMAND.`;
 
-  const result = await chat('', prompt, { temperature: 0, maxTokens: 20 });
+  const result = await chat('', prompt, { effort: 'low', maxTokens: 20 });
   if (!result) return 'QUERY';
 
   const cleaned = result.toUpperCase().replace(/[^A-Z]/g, '');
@@ -309,7 +363,7 @@ Message: "${message}"
 
 CRITICAL: Output ONLY the category name: DOCTOR_BOOKINGS, CLINIC_CONFIG, or CLINIC_CAPACITY.`;
 
-  const result = await chat('', prompt, { temperature: 0, maxTokens: 25 });
+  const result = await chat('', prompt, { effort: 'low', maxTokens: 25 });
   if (!result) return 'DOCTOR_BOOKINGS';
 
   const cleaned = result.toUpperCase().trim();
@@ -497,7 +551,7 @@ Return ONLY valid JSON matching this schema:
   "confirmation_prompt": "Plain language confirmation message..."
 }`;
 
-  const result = await chat('', prompt, { temperature: 0, maxTokens: 500 });
+  const result = await chat('', prompt, { effort: 'low', maxTokens: 500 });
   if (!result) return null;
 
   try {
@@ -613,7 +667,7 @@ Rules:
 - Return null (JSON null, not the string "null") for any field that cannot be determined from the message.
 - NEVER return the string "null" for a field — use JSON null.`;
 
-  const result = await chat('', prompt, { temperature: 0, maxTokens: 200 });
+  const result = await chat('', prompt, { effort: 'low', maxTokens: 200 });
   if (!result) return null;
 
   try {
@@ -668,7 +722,7 @@ Return ONLY valid JSON:
   "new_value": "the corrected value as a clean string, digits only for phone" | null
 }`;
 
-  const result = await chat('', prompt, { temperature: 0, maxTokens: 150 });
+  const result = await chat('', prompt, { effort: 'low', maxTokens: 150 });
   if (!result) return { is_correction: false, field: null, new_value: null };
 
   try {
@@ -729,7 +783,7 @@ Return ONLY valid JSON in the following format:
   "reason": "Brief reason if invalid, or null"
 }`;
 
-  const result = await chat('', prompt, { temperature: 0, maxTokens: 100 });
+  const result = await chat('', prompt, { effort: 'low', maxTokens: 100 });
   if (!result) return { valid: false, reason: 'Validation service error' };
 
   try {
@@ -758,7 +812,7 @@ Return ONLY valid JSON in the following format:
   "reason": "Brief reason if invalid, or null"
 }`;
 
-  const result = await chat('', prompt, { temperature: 0, maxTokens: 100 });
+  const result = await chat('', prompt, { effort: 'low', maxTokens: 100 });
   if (!result) return { valid: false, reason: 'Validation service error' };
 
   try {
@@ -843,24 +897,24 @@ async function interpretPatientMessage({ message, history = [], context = {} }) 
 
   const client = _getClient();
   try {
-    const response = await client.messages.create({
+    const response = await _createMessage(client, {
       model,
       max_tokens: 400,
-      temperature: 0,
+      output_config: { effort: 'low' },
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent }],
     }, { timeout: 20000 });
 
-    const rawResponse = response.content[0]?.text?.trim() || '';
+    const rawResponse = textFrom(response) || '';
     let decision = _parseAndValidateDecision(rawResponse);
 
     if (!decision) {
       // Retry ONCE with 'Return valid JSON only'
       try {
-        const retryResponse = await client.messages.create({
+        const retryResponse = await _createMessage(client, {
           model,
           max_tokens: 400,
-          temperature: 0,
+          output_config: { effort: 'low' },
           system: systemPrompt,
           messages: [
             { role: 'user', content: userContent },
@@ -868,7 +922,7 @@ async function interpretPatientMessage({ message, history = [], context = {} }) 
             { role: 'user', content: 'Return valid JSON only' },
           ],
         }, { timeout: 20000 });
-        decision = _parseAndValidateDecision(retryResponse.content[0]?.text?.trim());
+        decision = _parseAndValidateDecision(textFrom(retryResponse));
       } catch (retryErr) {
         console.error('[AI-Bot] Claude interpret retry error:', retryErr.message);
       }

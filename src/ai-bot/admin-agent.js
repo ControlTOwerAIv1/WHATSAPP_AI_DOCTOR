@@ -781,6 +781,9 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
           schedule.deleteSingleToken(target_date, token_number);
           schedule.invalidateCache();
           session.clearAdminPending(phone);
+          if (patient_phone) {
+            session.clearSession(patient_phone);
+          }
 
           const reply = `✅ Cancelled Token #${token_number} for ${patient_name || 'Patient'} on ${target_date}.${patient_phone ? (patientNotified ? '\nPatient has been notified automatically via WhatsApp ✅' : `\n⚠️ Patient notification failed (${notifyError}). Please contact them manually at ${patient_phone}.`) : ''}`;
           session.appendHistory(phone, 'assistant', reply);
@@ -802,6 +805,9 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
                 notifiedCount++;
               } catch (notifyErr) {
                 console.error(`[AI-Bot] ❌ Failed to notify patient ${patient.patient_phone}:`, notifyErr.message);
+              }
+              if (patient.patient_phone) {
+                session.clearSession(patient.patient_phone);
               }
             }
           }
@@ -863,6 +869,9 @@ async function handleAdminMessage(phone, message, senderName, doctorInfo = null)
               } catch (notifyErr) {
                 console.error(`[AI-Bot] ❌ Failed to notify patient ${patient.patient_phone}:`, notifyErr.message);
                 // Continue notifying remaining patients (Step 10e)
+              }
+              if (patient.patient_phone) {
+                session.clearSession(patient.patient_phone);
               }
             }
 
